@@ -19,6 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN_FILE = ROOT / "runtime" / "codex_runner_token"
 ALLOWED = {"score_light", "score_full", "resume_tailoring"}
 MAX_BODY = 2_000_000
+MACOS_CODEX_CANDIDATES = (
+    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    Path.home() / "Applications/ChatGPT.app/Contents/Resources/codex",
+    Path("/opt/homebrew/bin/codex"),
+    Path("/usr/local/bin/codex"),
+)
 
 
 def token() -> str:
@@ -79,7 +85,15 @@ def schema_for(operation: str) -> dict:
 
 def cli_path() -> str | None:
     configured = os.getenv("CODEX_CLI_PATH", "").strip()
-    return configured if configured and Path(configured).is_file() else shutil.which("codex")
+    if configured and Path(configured).is_file() and os.access(configured, os.X_OK):
+        return configured
+    discovered = shutil.which("codex")
+    if discovered:
+        return discovered
+    for candidate in MACOS_CODEX_CANDIDATES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def diagnostics() -> dict:

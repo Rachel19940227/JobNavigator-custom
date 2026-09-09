@@ -28,6 +28,9 @@ credits.
    docker compose up -d --build
    ```
 
+   On macOS the script automatically detects the Codex binary bundled inside
+   `/Applications/ChatGPT.app`, even when the process has a minimal `PATH`.
+
    The runner creates `runtime/codex_runner_token` with mode `0600`. The runtime
    directory is gitignored. Do not copy `~/.codex`, `auth.json`, or the token into
    the repository, an image, logs, or a support request.

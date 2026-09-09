@@ -86,6 +86,7 @@ DEFAULT_SETTINGS = {
         {"provider": "ollama", "model": "llama3.1:8b"},
         {"provider": "ollama", "model": "qwen2.5:32b"},
         {"provider": "ollama", "model": "qwen2.5-coder:7b"},
+        {"provider": "ollama", "model": "qwen3:8b"},
         {"provider": "ollama", "model": "deepseek-r1:14b"},
         {"provider": "ollama", "model": "mistral:7b"},
         {"provider": "ollama", "model": "gemma2:9b"},

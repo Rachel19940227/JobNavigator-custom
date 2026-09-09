@@ -73,6 +73,8 @@ DEFAULT_SETTINGS = {
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "openai", "model": "gpt-5.4-mini"},
         {"provider": "openai", "model": "gpt-5.4-nano"},
+        {"provider": "openai", "model": "gpt-5.6-terra"},
+        {"provider": "openai", "model": "gpt-5.6-luna"},
         {"provider": "openai", "model": "gpt-5.3-codex"},
         {"provider": "openai", "model": "gpt-5.2"},
         {"provider": "openai", "model": "gpt-4o"},

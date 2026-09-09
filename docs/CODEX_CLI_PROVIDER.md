@@ -40,7 +40,7 @@ credits.
    privacy controls; the start script is the reliable no-permission-change path.
 
 4. In **Settings → Models**, set both **Scoring** and **Tailoring** overrides to
-   `Codex CLI (ChatGPT subscription) / subscription-default`. The status row shows
+   `Codex CLI (ChatGPT subscription) / gpt-5.6-luna`. The status row shows
    CLI installation, login, version, Ollama reachability, and whether `qwen3:8b`
    is installed.
 
@@ -66,5 +66,5 @@ local `Ollama / qwen3:8b`; its invalid JSON receives one repair attempt. User
 cancellation and business validation errors never fall back. If both providers
 fail, the task fails explicitly and no score or resume is fabricated.
 
-The subscription's own usage limits still apply. `subscription-default` lets the
-installed CLI and account choose the currently available subscription model.
+The subscription's own usage limits still apply. JobNavigator explicitly passes
+`--model gpt-5.6-luna` to the installed CLI for scoring and tailoring.

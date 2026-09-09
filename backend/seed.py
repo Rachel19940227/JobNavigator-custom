@@ -75,7 +75,7 @@ DEFAULT_SETTINGS = {
         {"provider": "claude_code", "model": "claude-opus-4-6"},
         {"provider": "claude_code", "model": "claude-haiku-4-5"},
         {"provider": "claude_code", "model": "claude-fable-5"},
-        {"provider": "codex_cli", "model": "subscription-default"},
+        {"provider": "codex_cli", "model": "gpt-5.6-luna"},
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "openai", "model": "gpt-5.4-mini"},
         {"provider": "openai", "model": "gpt-5.4-nano"},

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN_FILE = ROOT / "runtime" / "codex_runner_token"
 ALLOWED = {"score_light", "score_full", "resume_tailoring"}
 MAX_BODY = 2_000_000
+DEFAULT_MODEL = "gpt-5.6-luna"
 MACOS_CODEX_CANDIDATES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
     Path.home() / "Applications/ChatGPT.app/Contents/Resources/codex",
@@ -159,7 +160,13 @@ class Handler(BaseHTTPRequestHandler):
         with tempfile.TemporaryDirectory(prefix="jobnavigator-codex-") as td:
             schema = Path(td) / "schema.json"; output = Path(td) / "result.json"
             schema.write_text(json.dumps(schema_for(operation)))
-            cmd = [exe, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            model = str(body.get("model") or DEFAULT_MODEL)
+            # JobNavigator exposes one supported subscription target. Keep the
+            # model explicit so the ChatGPT conversation's selected model cannot
+            # silently change background scoring/tailoring behavior.
+            if model == "subscription-default":
+                model = DEFAULT_MODEL
+            cmd = [exe, "exec", "--model", model, "--ephemeral", "--ignore-user-config", "--ignore-rules",
                    "--sandbox", "read-only", "--skip-git-repo-check", "--json",
                    "--output-schema", str(schema), "--output-last-message", str(output), "-"]
             env = {k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}}

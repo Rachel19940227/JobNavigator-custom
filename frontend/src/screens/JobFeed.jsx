@@ -67,6 +67,7 @@ const RAIL_BTN = {
 }
 const SOURCE_LABELS = {
   direct: 'Direct', extension: 'Extension', jobspy_linkedin: 'LinkedIn', jobspy_indeed: 'Indeed',
+  manual_linkedin: 'LinkedIn Manual', manual_url: 'Manual URL',
   jobspy_zip_recruiter: 'ZipRecruiter', jobspy_google: 'Google', levels_fyi: 'Levels', linkedin_personal: 'LinkedIn Personal',
   linkedin_extension: 'LinkedIn Extension', jobright: 'Jobright', freehire: 'FreeHire', playwright_url: 'Company careers', playwright_direct: 'Career page',
 }
@@ -230,6 +231,10 @@ export default function V2JobFeed() {
   const [hasMore, setHasMore] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [addJobOpen, setAddJobOpen] = useState(false)
+  const [addJobUrl, setAddJobUrl] = useState('')
+  const [addingJob, setAddingJob] = useState(false)
+  const [addJobError, setAddJobError] = useState('')
   const [rescoreJob, setRescoreJob] = useState(null)
   const [rescoreOpts, setRescoreOpts] = useState([])
   const [rescoreSel, setRescoreSel] = useState([])
@@ -359,6 +364,23 @@ export default function V2JobFeed() {
     setFirstLoaded(true)   // the header's `total` is real from here on
   }, [buildParams, pushToast])
   useEffect(() => { fetchJobs() }, [fetchJobs])
+
+  const addJobFromUrl = useCallback(async () => {
+    const url = addJobUrl.trim()
+    if (!url || addingJob) return
+    setAddingJob(true); setAddJobError('')
+    try {
+      const { data: job } = await api.post('/jobs/import-url', { url })
+      setAddJobOpen(false); setAddJobUrl('')
+      setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
+      if (job.new) setTotal((n) => n + 1)
+      setSel(0); setDetail(job); setReportTab(0); setViewCached(false); setCachedHtml(null)
+      refreshStats()
+      pushToast({ kind: 'success', msg: job.new ? 'Job added.' : 'This job was already in your list.' })
+    } catch (e) {
+      setAddJobError(e.response?.data?.detail || e.message || 'Could not import this job')
+    } finally { setAddingJob(false) }
+  }, [addJobUrl, addingJob, pushToast, refreshStats])
 
   // append next page (infinite scroll + refill after triage drains the list)
   const loadingMoreRef = useRef(false)
@@ -959,6 +981,7 @@ export default function V2JobFeed() {
           <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--muted)', ...headStyle }}>{head ? `${head.total} open roles · ${head.arrived} arrived today · ${head.unscored} not yet scored` : loadError ? DASH : NBSP}</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Button onClick={() => { setAddJobError(''); setAddJobOpen(true) }}>+ Add job</Button>
           {head && head.unscored > 0 && <Button variant="ai" onClick={openRescoreBulk} title="Pick résumés + depth, then score every unscored job" style={headStyle}>Score {head.unscored} unscored jobs</Button>}
         </div>
       </HeaderRow>
@@ -1391,6 +1414,7 @@ export default function V2JobFeed() {
                       </HeaderRow>
                       {/* body */}
                       <div className="v2-scroll" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '14px 30px 18px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        {rpt?.job_category && <Pill size="sm">{rpt.job_category}</Pill>}
                         {rpt?.summary && <span style={{ fontSize: 13.5, lineHeight: '22px', color: 'var(--text-2)' }}>{rpt.summary}</span>}
                         {(d.fit_strengths || []).length > 0 && !rpt?.summary && <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>{(d.fit_strengths || []).map((s, k) => <div key={k} style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--text-2)' }}><span style={{ flex: '0 0 auto', color: 'var(--good)', display: 'flex', alignItems: 'center' }}><CheckGlyph /></span><span>{s}</span></div>)}</div>}
 
@@ -1484,6 +1508,13 @@ export default function V2JobFeed() {
                             {/* ui: keep — --bad 10/600 uppercase: neither the ink nor the weight Label carries */}
                             <span style={{ fontSize: 10, letterSpacing: '.15em', textTransform: 'uppercase', color: 'var(--bad)', fontWeight: 600 }}>Hard blockers</span>
                             {(rpt.hard_blockers || []).map((b, k) => <div key={k} style={{ display: 'flex', gap: 9, fontSize: 12.5, lineHeight: '18px', color: 'var(--text-2)' }}><span style={{ color: 'var(--bad)' }}>!</span><span>{b}</span></div>)}
+                          </div>
+                        )}
+                        {((rpt?.experience_gaps || []).length > 0 || (rpt?.potential_concerns || []).length > 0) && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '11px 13px', border: '1px solid var(--warn)', borderRadius: 'var(--radius-cell)', background: 'var(--warn-soft)' }}>
+                            <Label style={{ color: 'var(--warn)' }}>Experience gaps & concerns</Label>
+                            {[...(rpt.experience_gaps || []), ...(rpt.potential_concerns || [])].map((item, k) =>
+                              <div key={k} style={{ display: 'flex', gap: 9, fontSize: 12.5, lineHeight: '18px', color: 'var(--text-2)' }}><span style={{ color: 'var(--warn)' }}>!</span><span>{item}</span></div>)}
                           </div>
                         )}
                         {rpt?.ats_tip && (
@@ -1723,6 +1754,26 @@ export default function V2JobFeed() {
               <Button variant="secondary" size="sm" onClick={() => setRescoreJob(null)} style={{ marginLeft: 'auto' }}>Cancel</Button>
               <Button variant="ai" size="sm" onClick={runRescore} disabled={!rescoreSel.length} title={rescoreSel.length ? undefined : 'Pick at least one résumé'}>Run scoring</Button>
             </FooterRow>
+        </ModalPanel>
+      )}
+
+      {addJobOpen && (
+        <ModalPanel width={520} title="Add job from URL" onClose={() => !addingJob && setAddJobOpen(false)} zIndex={70}>
+          <HeaderRow align="stretch" pad="20px 24px 14px" style={{ flexDirection: 'column', gap: 5 }}>
+            <Label>Add job</Label>
+            <Heading size={19} className="v2-dialogtitle">Paste a public job link</Heading>
+            <Helper>LinkedIn and public employer pages are stored locally with their job description.</Helper>
+          </HeaderRow>
+          <div style={{ padding: '18px 24px' }}>
+            <Input autoFocus type="url" value={addJobUrl} onChange={setAddJobUrl}
+              placeholder="https://company.example/jobs/123" ariaLabel="Job URL" invalid={!!addJobError}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addJobFromUrl() } }} />
+            {addJobError && <Helper style={{ color: 'var(--bad)', marginTop: 7 }}>{addJobError}</Helper>}
+          </div>
+          <FooterRow variant="wide">
+            <Button variant="secondary" size="sm" onClick={() => setAddJobOpen(false)} disabled={addingJob} style={{ marginLeft: 'auto' }}>Cancel</Button>
+            <Button size="sm" onClick={addJobFromUrl} disabled={addingJob || !addJobUrl.trim()}>{addingJob ? <><Spinner size={11} color="currentColor" /> Adding…</> : 'Add job'}</Button>
+          </FooterRow>
         </ModalPanel>
       )}
 

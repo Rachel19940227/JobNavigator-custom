@@ -42,7 +42,7 @@ export function makeMutators(data, onData) {
 }
 
 // ── field primitives (v2-styled, with the **bold** shortcut) ─────────────────
-export function Field({ label, value, onChange, placeholder, multiline, rows, flex }) {
+export function Field({ label, value, onChange, placeholder, multiline, rows, flex, type = 'text' }) {
   const boldKey = (e) => {
     if (!((e.ctrlKey || e.metaKey) && e.key === 'b')) return
     e.preventDefault()
@@ -57,7 +57,7 @@ export function Field({ label, value, onChange, placeholder, multiline, rows, fl
       {label && <Helper size="xs">{label}</Helper>}
       {multiline
         ? <Textarea value={value || ''} onChange={onChange} onKeyDown={boldKey} placeholder={placeholder} rows={rows || 3} />
-        : <Input value={value || ''} onChange={onChange} placeholder={placeholder} />}
+        : <Input type={type} value={value || ''} onChange={onChange} placeholder={placeholder} />}
     </label>
   )
 }
@@ -113,10 +113,10 @@ export const EmptyState = ({ what, note }) => (
 )
 // MenuHead / MenuItem used to be declared here too. There is now one of each,
 // in ui.jsx — the résumé editor imports them straight from '../ui'.
-export const MicroField = ({ label, value, onChange, placeholder }) => (
+export const MicroField = ({ label, value, onChange, placeholder, type = 'text' }) => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
     <Label>{label}</Label>
-    <Input value={value || ''} onChange={onChange} placeholder={placeholder} ariaLabel={label} />
+    <Input type={type} value={value || ''} onChange={onChange} placeholder={placeholder} ariaLabel={label} />
   </div>
 )
 
@@ -381,9 +381,10 @@ export function EducationEditor({ emptyNote, data, setField, mutate, onRemoved }
             <MicroField label="School" value={e.school} onChange={(v) => setField(`education.${i}.school`, v)} />
             <MicroField label="Location" value={e.location} onChange={(v) => setField(`education.${i}.location`, v)} />
           </div>
+          <MicroField label="Degree" value={e.degree} onChange={(v) => setField(`education.${i}.degree`, v)} />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
-            <MicroField label="Degree" value={e.degree} onChange={(v) => setField(`education.${i}.degree`, v)} />
-            <MicroField label="Years" value={e.years} onChange={(v) => setField(`education.${i}.years`, v)} placeholder="2015 – 2019" />
+            <MicroField type="month" label="Start month" value={e.start_date} onChange={(v) => setField(`education.${i}.start_date`, v)} />
+            <MicroField type="month" label="End month" value={e.end_date} onChange={(v) => setField(`education.${i}.end_date`, v)} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}><RemoveLink onClick={() => undoRemove('Removed education entry',
             (d) => d.education.splice(i, 1),
@@ -391,7 +392,7 @@ export function EducationEditor({ emptyNote, data, setField, mutate, onRemoved }
         </Card>
       ))}
       {(data.education || []).length === 0 && <EmptyState note={emptyNote} what="education" />}
-      <DashedAdd big onClick={() => mutate((d) => { d.education = d.education || []; d.education.push({ school: '', location: '', degree: '' }) })}>+ Add education</DashedAdd>
+      <DashedAdd big onClick={() => mutate((d) => { d.education = d.education || []; d.education.push({ school: '', location: '', degree: '', start_date: '', end_date: '' }) })}>+ Add education</DashedAdd>
     </div>
   )
 }

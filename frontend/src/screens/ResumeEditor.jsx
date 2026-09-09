@@ -395,6 +395,19 @@ export default function ResumeEditor() {
   const onData = useCallback((next) => { setData(next); persist({ json_data: next }) }, [persist])
   const pickTemplate = (t) => { setTemplate(t); setTplOpen(false); persist({ template: t }) }
   const pickFormat = (f) => { setFormat(f); setFmtOpen(false); persist({ page_format: f }) }
+  const setSpacing = (key, value) => {
+    const next = JSON.parse(JSON.stringify(data || EMPTY))
+    next.layout = next.layout || {}
+    if (value === '') delete next.layout[key]
+    else next.layout[key] = Number(value)
+    if (!Object.keys(next.layout).length) delete next.layout
+    onData(next)
+  }
+  const resetSpacing = () => {
+    const next = JSON.parse(JSON.stringify(data || EMPTY))
+    delete next.layout
+    onData(next)
+  }
 
   // live PDF preview — one request at a time (abort the in-flight render before the
   // next so overlapping edits don't hammer /pdf or race the tracer-link writer)
@@ -460,6 +473,18 @@ export default function ResumeEditor() {
     const base = (api.defaults.baseURL || '').replace(/\/api$/, '')
     return `${base}/api/resumes/${id}/pdf?template=${encodeURIComponent(template)}&format=${encodeURIComponent(format)}`
   }, [id, template, format])
+
+  const jobLinkWithAssets = useMemo(() => {
+    if (!jobData?.url || !doc?.job_id || !id) return jobData?.url || ''
+    try {
+      const url = new URL(jobData.url)
+      const params = new URLSearchParams(url.hash.replace(/^#/, ''))
+      params.set('jn_job', doc.job_id)
+      params.set('jn_resume', id)
+      url.hash = params.toString()
+      return url.toString()
+    } catch { return jobData.url }
+  }, [jobData?.url, doc?.job_id, id])
 
   // Reserves the chrome's shape while the document loads, instead of a bare "Loading…"
   // that collapses the screen then jumps to the real layout once the doc lands.
@@ -563,6 +588,7 @@ export default function ResumeEditor() {
                       bare letter key needs a target/isContentEditable guard first. */}
                   <MenuItem icon="✉" onClick={goCover}>Cover letter</MenuItem>
                   {doc.job_id && <MenuItem icon="↗" onClick={() => navigate(`/feed?job=${doc.job_id}`)}>Open in feed</MenuItem>}
+                  {jobLinkWithAssets && <MenuItem icon="↗" href={jobLinkWithAssets} target="_blank" onClick={() => setHeadMenu(false)}>Open job link</MenuItem>}
                   {doc.job_id && <MenuItem icon="✓" onClick={markApplied}>Mark applied</MenuItem>}
                   <MenuItem danger icon="✕" onClick={deleteResume}>Delete copy</MenuItem>
                 </Menu>
@@ -624,6 +650,16 @@ export default function ResumeEditor() {
                     {templates.map((t) => <MenuItem key={t.id} role="option" ariaSelected={t.id === template} selected={t.id === template} onClick={() => pickTemplate(t.id)}>{t.name}</MenuItem>)}
                   </Menu>
               )}
+            </div>}
+            {tplReady && <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Input type="number" min="0.8" max="2" step="0.05" value={data.layout?.line_spacing ?? ''}
+                onChange={(v) => setSpacing('line_spacing', v)} ariaLabel="Line spacing" title="Line spacing (0.8–2.0)"
+                placeholder="Line" style={{ width: 68, height: 29, fontSize: 11.5 }} />
+              <Input type="number" min="0" max="24" step="1" value={data.layout?.paragraph_spacing ?? ''}
+                onChange={(v) => setSpacing('paragraph_spacing', v)} ariaLabel="Paragraph spacing" title="Paragraph spacing in points (0–24)"
+                placeholder="Para" style={{ width: 68, height: 29, fontSize: 11.5 }} />
+              {(data.layout?.line_spacing != null || data.layout?.paragraph_spacing != null) &&
+                <Pill size="sm" onClick={resetSpacing} title="Use template spacing">Reset</Pill>}
             </div>}
             {/* format */}
             {tplReady && <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>

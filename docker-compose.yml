@@ -37,6 +37,8 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-600}
+      CODEX_RUNNER_URL: ${CODEX_RUNNER_URL:-http://host.docker.internal:8765}
+      CODEX_RUNNER_TOKEN_FILE: /run/secrets/codex_runner_token
       TZ: ${TZ:-America/Toronto}
     ports:
       - "127.0.0.1:8000:8000"
@@ -47,6 +49,7 @@ services:
       - ./backend:/app/backend
       - ./backups:/app/backups
       - ./backend/.linkedin_api:/root/.linkedin_api
+      - ./runtime/codex_runner_token:/run/secrets/codex_runner_token:ro
 
   frontend:
     build:

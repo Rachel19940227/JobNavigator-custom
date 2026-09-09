@@ -20,6 +20,7 @@ def log_llm_call(
     job_id: Optional[UUID] = None,
     success: bool = True,
     error: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> None:
     """Insert a row into llm_call_log; swallows DB errors so logging never breaks scoring. usage: {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}."""
     try:
@@ -33,6 +34,7 @@ def log_llm_call(
         )
         db = SessionLocal()
         try:
+            metadata = metadata or {}
             row = LlmCallLog(
                 purpose=purpose,
                 provider=provider,
@@ -46,6 +48,13 @@ def log_llm_call(
                 duration_ms=duration_ms,
                 success=success,
                 error=(error[:500] if error else None),  # truncate long error strings
+                requested_provider=metadata.get("requested_provider") or provider,
+                actual_provider=metadata.get("actual_provider") or provider,
+                actual_model=metadata.get("actual_model") or model,
+                fallback_used=bool(metadata.get("fallback_used", False)),
+                fallback_reason=(str(metadata.get("fallback_reason"))[:500] if metadata.get("fallback_reason") else None),
+                codex_error_category=metadata.get("codex_error_category") or None,
+                attempt_count=int(metadata.get("attempt_count") or 1),
             )
             db.add(row)
             db.commit()
@@ -66,6 +75,7 @@ async def track_llm_call(purpose: str, provider: str, model: str, job_id=None):
                           "cache_read_tokens": 0, "cache_write_tokens": 0}
             self.provider = provider
             self.model = model
+            self.metadata = {}
 
         def record(self, resp):
             """Take usage + the dispatched provider/model off an LLM response dict."""
@@ -73,6 +83,9 @@ async def track_llm_call(purpose: str, provider: str, model: str, job_id=None):
                 self.usage = resp.get("usage") or self.usage
                 self.provider = resp.get("provider") or self.provider
                 self.model = resp.get("model") or self.model
+                self.metadata = {k: resp.get(k) for k in (
+                    "requested_provider", "actual_provider", "actual_model", "fallback_used",
+                    "fallback_reason", "codex_error_category", "attempt_count") if k in resp}
             return resp
 
     t = _Tracker(provider, model)
@@ -102,6 +115,7 @@ async def track_llm_call(purpose: str, provider: str, model: str, job_id=None):
                 job_id=job_id,
                 success=success,
                 error=error,
+                metadata=t.metadata,
             )
         except Exception as e:
             logger.warning(f"track_llm_call finally block failed (non-fatal): {e}")

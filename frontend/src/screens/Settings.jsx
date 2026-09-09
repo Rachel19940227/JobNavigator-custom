@@ -11,6 +11,7 @@ import '../theme.css'
 const PROVIDERS = [
   ['claude_api', 'Claude API (Anthropic)'],
   ['claude_code', 'Claude Code (Subscription)'],
+  ['codex_cli', 'Codex CLI (ChatGPT subscription)'],
   ['openai', 'OpenAI'],
   ['ollama', 'Ollama (Local)'],
   ['openrouter', 'OpenRouter'],
@@ -19,7 +20,7 @@ const PROVIDER_LABEL = Object.fromEntries(PROVIDERS)
 // providers whose catalog /api/llm/models can search live
 const SEARCHABLE = ['openrouter', 'openai', 'claude_api', 'claude_code']
 // providers that need no key
-const KEYLESS = ['claude_code', 'ollama', '']
+const KEYLESS = ['claude_code', 'codex_cli', 'ollama', '']
 
 // The value rows' fields are `Input` now (adornment slot and all), so the box
 // lives in ui.jsx with every other field. What is left here is the type these
@@ -172,6 +173,7 @@ export default function Settings() {
   const [editFor, setEditFor] = useState(null)
   const [modelsOpen, setModelsOpen] = useState(false)
   const [li, setLi] = useState(null)          // linkedin session status
+  const [codexStatus, setCodexStatus] = useState(null)
   const [toast, setToast] = useState(null)
   const [loadErr, setLoadErr] = useState(null)   // set on a failed GET /settings
   const [narrow, setNarrow] = useState(false)    // stack rows when the pane is tight
@@ -239,6 +241,7 @@ export default function Settings() {
     () => api.get('/resumes', { params: { is_base: true } }).then(({ data }) => setResumes(data || [])).catch((e) => { console.error(e); flash('Could not load your résumés — the default-résumé picker is empty', true) }),
     () => api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in that picker */ }),
     () => api.get('/linkedin/session').then(({ data }) => setLi(data)).catch(() => { /* silent: the LinkedIn row reads “unknown” and its own actions report their failures */ }),
+    () => api.get('/llm/codex-status').then(({ data }) => setCodexStatus(data)).catch(() => setCodexStatus({ codex: { reachable: false }, ollama: { reachable: false } })),
   ])
 
   // One shared timer, not one per flash — otherwise two saves inside 2.2s let the first timer clear the second message early.
@@ -347,7 +350,7 @@ export default function Settings() {
       ['models', 'AI', 'Models', '', [
         { kind: 'pair', label: 'Primary provider · model', help: 'Every AI feature uses this pair unless overridden below.',
           pKey: 'llm_provider', mKey: 'llm_model',
-          info: "Providers: Claude API, Claude Code, OpenAI, Ollama (local), OpenRouter. The model list shows that provider's models, including any you added under Model catalog. OpenRouter covers every vendor with one key but has no prompt-cache discount." },
+          info: "Providers: Claude API, Claude Code, Codex CLI subscription, OpenAI, Ollama (local), OpenRouter. The model list shows that provider's models, including any you added under Model catalog." },
         B('API key', 'API key for the primary provider.', 'llm_api_key', { secret: true, mono: true, w: '340px', hide: () => KEYLESS.includes(val('llm_provider', 'claude_api')) }),
         LLM('Scoring', 'Model that scores new jobs against your résumés.', 'scoring_llm'),
         LLM('Scoring fallback', 'Retries scoring once on error or rate limit — scoring only.', 'llm_fallback',
@@ -356,6 +359,11 @@ export default function Settings() {
         LLM('Cover letters', 'Model that drafts letters from résumé + posting + Persona.', 'cover_letter_llm'),
         LLM('Autofill', 'Model that answers application-form questions in the extension.', 'autofill_llm'),
         LLM('Email classification', 'Model that sorts Gmail replies into application events.', 'email_llm'),
+        { kind: 'codexstatus', label: 'Codex CLI status', help: 'Host runner, ChatGPT login, and fixed local fallback health.' },
+        B('Codex timeout', 'Maximum seconds for one Codex CLI request.', 'codex_timeout_seconds', { mono: true, int: true, w: '135px' }),
+        B('Codex max concurrency', 'Extra Codex requests wait; default 1.', 'codex_max_concurrency', { mono: true, int: true, w: '135px' }),
+        SW('Fallback to local Ollama', 'Only on Codex quota, login, timeout, process, or invalid-output failures.', 'Disabled — Codex errors are returned.', 'codex_fallback_enabled', { dflt: true }),
+        { kind: 'fixedfallback', label: 'Codex fallback', help: 'Fixed by policy; it cannot route to a paid API.' },
         { kind: 'models', label: 'Model catalog', help: 'Add new or unlisted models and remove your additions.',
           info: 'Add models that are not in the built-in list. Search uses the provider’s catalog for OpenRouter, OpenAI and Claude. For Ollama, type the local model name. Removed models stay removed.' },
       ]],
@@ -482,7 +490,7 @@ export default function Settings() {
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li])
+  }, [S, resumes, personaAvailable, trig, li, codexStatus])
 
   const q = query.trim().toLowerCase()
   const matches = (sec) => !q || sec[2].toLowerCase().includes(q) ||
@@ -572,7 +580,7 @@ export default function Settings() {
                   <span style={{ fontSize: 11.5, lineHeight: '26px', color: 'var(--muted)', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</span>
                 </div>
                 {rows.filter((r) => !(r.hide && r.hide())).map((r) => (
-                  <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, li, setLi, flash, defaults, narrow }} />
+                  <Row key={r.label} r={r} ctx={{ S, val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, li, setLi, codexStatus, flash, defaults, narrow }} />
                 ))}
               </div>
             ))}
@@ -609,7 +617,7 @@ export default function Settings() {
 
 // ── one settings row ─────────────────────────────────────────────────────────
 function Row({ r, ctx }) {
-  const { val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, li, setLi, flash, S, narrow } = ctx
+  const { val, isOn, save, info, setInfo, ovr, setOvr, trig, runAction, setEditFor, setModelsOpen, modelsFor, li, setLi, codexStatus, flash, S, narrow } = ctx
   const infoOpen = r.info && info === r.label
 
   const right = (() => {
@@ -694,6 +702,16 @@ function Row({ r, ctx }) {
             <ActionBtn label="Manage…" state="" onClick={() => setModelsOpen(true)} ariaLabel={`${r.label} — manage`} />
           </>
         )
+      case 'codexstatus': {
+        const c = codexStatus?.codex || {}; const o = codexStatus?.ollama || {}
+        return <div style={{ flex: 1, minWidth: 0 }}>
+          <Helper size="xs" mono>Codex: {c.installed ? `${c.version || 'installed'} · ${c.logged_in ? 'ChatGPT login active' : 'login required'}` : 'runner/CLI unavailable'}
+            {' · '}Ollama: {o.reachable ? (o.qwen3_8b_installed ? 'qwen3:8b ready' : 'qwen3:8b missing') : 'unreachable'}</Helper>
+          <Helper size="xs">Codex CLI uses your codex login ChatGPT/Codex subscription. Only quota, login, execution, timeout, or invalid-output failures fall back to local Ollama qwen3:8b; OpenAI API billing is never used.</Helper>
+        </div>
+      }
+      case 'fixedfallback':
+        return <Mono size="sm" code>Ollama / qwen3:8b</Mono>
       case 'button':
         return (
           <>

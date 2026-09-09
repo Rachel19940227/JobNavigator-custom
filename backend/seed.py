@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = {
     "scoring_rubric": ("Score each resume using these criteria (each 0-20, sum to 0-100):\n1. SKILLS MATCH (weight: 20): How many required technical skills/tools does the candidate have?\n2. EXPERIENCE LEVEL (weight: 20): Does seniority/years match? (entry-level resume for senior role = low)\n3. DOMAIN FIT (weight: 20): Has the candidate worked in the same industry/domain?\n4. ROLE ALIGNMENT (weight: 20): Does the candidate's career trajectory match this role type?\n5. REQUIREMENTS MET (weight: 20): Does the candidate meet stated requirements (education, certs, clearance)?\n\nUse the FULL 0-100 range. 90+ = perfect match. 50-70 = decent with gaps. Below 30 = poor match.\nAvoid clustering scores — differentiate meaningfully between resumes and jobs.", "Editable resume scoring rubric"),
     "scoring_output_light": ('Return ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME"\n}', "Light scoring output schema"),
     "scoring_output_full": ('Classify job_category as exactly one of: Business Analyst, Project, Product, Data, Software Development, IT Support, Testing / QA.\nReturn ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME",\n  "job_category": "Business Analyst",\n  "breakdown": {"skills": 0-20, "experience": 0-20, "domain": 0-20, "role": 0-20, "requirements": 0-20},\n  "summary": "2-3 sentence assessment grounded only in the resumes",\n  "requirement_mapping": [\n    {"requirement": "JD requirement text", "cv_match": "matching resume evidence or null", "matched": true/false, "severity": "required or preferred"}\n  ],\n  "keyword_coverage_pct": 0-100,\n  "matched_keywords": ["matching skill"],\n  "missing_keywords": ["missing skill"],\n  "experience_gaps": ["experience gap"],\n  "potential_concerns": ["concern; never invent candidate facts"],\n  "hard_blockers": ["blocker if any"],\n  "ats_tip": "one truthful actionable suggestion"\n}', "Full scoring output schema with grounded fit analysis"),
-    "llm_provider": ("ollama", "LLM provider: claude_api, claude_code, openai, ollama"),
+    "llm_provider": ("ollama", "LLM provider: claude_api, claude_code, codex_cli, openai, ollama"),
     "llm_model": ("qwen3:8b", "LLM model name"),
     "llm_api_key": ("", "API key for OpenAI (not needed for Claude API/Ollama)"),
     "llm_fallback_provider": ("", "Fallback LLM provider (empty = no fallback)"),
@@ -53,6 +53,11 @@ DEFAULT_SETTINGS = {
     "scoring_llm_provider": ("", "Resume scoring provider override (empty = use Primary)"),
     "scoring_llm_model": ("", "Resume scoring model override (empty = use Primary)"),
     "scoring_llm_api_key": ("", "API key for the scoring provider override"),
+    "codex_fallback_enabled": ("true", "Use local Ollama qwen3:8b only when Codex CLI cannot produce a valid result"),
+    "codex_fallback_provider": ("ollama", "Fixed safe fallback provider for Codex CLI"),
+    "codex_fallback_model": ("qwen3:8b", "Fixed safe fallback model for Codex CLI"),
+    "codex_timeout_seconds": ("600", "Host Codex CLI subprocess timeout"),
+    "codex_max_concurrency": ("1", "Maximum concurrent host Codex CLI processes"),
     "llm_models_list": (json.dumps([
         {"provider": "claude_api", "model": "claude-sonnet-5"},
         {"provider": "claude_api", "model": "claude-sonnet-4-6"},
@@ -70,6 +75,7 @@ DEFAULT_SETTINGS = {
         {"provider": "claude_code", "model": "claude-opus-4-6"},
         {"provider": "claude_code", "model": "claude-haiku-4-5"},
         {"provider": "claude_code", "model": "claude-fable-5"},
+        {"provider": "codex_cli", "model": "subscription-default"},
         {"provider": "openai", "model": "gpt-5.4"},
         {"provider": "openai", "model": "gpt-5.4-mini"},
         {"provider": "openai", "model": "gpt-5.4-nano"},
@@ -359,7 +365,7 @@ INT_SETTING_KEYS = _int_setting_keys()
 
 # Providers the LLM dispatcher knows how to call. "" means "inherit the primary
 # llm_provider", which every per-feature prefix does.
-_LLM_PROVIDERS = {"", "claude_api", "claude_code", "openai", "ollama", "openrouter"}
+_LLM_PROVIDERS = {"", "claude_api", "claude_code", "codex_cli", "openai", "ollama", "openrouter"}
 
 # Depth words. `tailor_auto_quick_score` also honours legacy boolean spellings
 # (see routes_resumes._resolve_chain_score_depth).
@@ -376,6 +382,8 @@ ENUM_SETTING_VALUES = {
     "scoring_default_depth": _DEPTHS,
     "on_save_action": {"off"} | _DEPTHS,
     "tailor_auto_quick_score": {"off", "false", "no", "0", "true", "yes", "1", ""} | _DEPTHS,
+    "codex_fallback_provider": {"ollama"},
+    "codex_fallback_model": {"qwen3:8b"},
     "tracer_links_url_style": {"path", "param", "path_jobid", "param_jobid"},
 }
 
@@ -585,6 +593,13 @@ def run_migrations(db):
         """ALTER TABLE llm_call_log DROP CONSTRAINT IF EXISTS llm_call_log_job_id_fkey""",
         """ALTER TABLE llm_call_log ADD CONSTRAINT llm_call_log_job_id_fkey FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE SET NULL""",
         "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS provider VARCHAR NOT NULL DEFAULT ''",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS requested_provider VARCHAR",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS actual_provider VARCHAR",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS actual_model VARCHAR",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS fallback_used BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS fallback_reason TEXT",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS codex_error_category VARCHAR",
+        "ALTER TABLE llm_call_log ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS best_cv_score FLOAT",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ",
         "CREATE INDEX IF NOT EXISTS ix_jobs_best_cv_score ON jobs(best_cv_score)",

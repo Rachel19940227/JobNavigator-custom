@@ -25,6 +25,26 @@ _KEY_SLOTS = [
 _ENV_KEY = {"openai": "OPENAI_API_KEY", "claude_api": "ANTHROPIC_API_KEY"}
 
 
+@router.get("/codex-status")
+async def codex_status():
+    """Fast, non-blocking health snapshot for the host subscription runner and Ollama fallback."""
+    from backend.analyzer.codex_gateway import runner_status
+    codex, ollama = await __import__("asyncio").gather(runner_status(), _ollama_status())
+    return {"codex": codex, "ollama": ollama}
+
+
+async def _ollama_status() -> dict:
+    base = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{base}/api/tags")
+        resp.raise_for_status()
+        names = [m.get("name") or m.get("model") for m in resp.json().get("models", [])]
+        return {"reachable": True, "qwen3_8b_installed": "qwen3:8b" in names, "models": names}
+    except Exception:
+        return {"reachable": False, "qwen3_8b_installed": False, "models": []}
+
+
 def _get(db, key: str) -> str:
     row = db.query(Setting).filter(Setting.key == key).first()
     return (row.value or "") if row else ""

@@ -369,6 +369,13 @@ class LlmCallLog(Base):
     duration_ms = Column(Integer, default=0, nullable=False)
     success = Column(Boolean, default=True, nullable=False)
     error = Column(Text, nullable=True)
+    requested_provider = Column(String, nullable=True)
+    actual_provider = Column(String, nullable=True)
+    actual_model = Column(String, nullable=True)
+    fallback_used = Column(Boolean, default=False, nullable=False)
+    fallback_reason = Column(Text, nullable=True)
+    codex_error_category = Column(String, nullable=True)
+    attempt_count = Column(Integer, default=1, nullable=False)
 
 
 # ── Activity Log ────────────────────────────────────────────────────────────

@@ -58,7 +58,7 @@ PRICING: dict[str, dict[str, dict]] = {
 }
 
 # Providers whose calls are covered by flat subscription / local compute — always $0.
-FREE_PROVIDERS: set[str] = {"claude_code", "ollama"}
+FREE_PROVIDERS: set[str] = {"claude_code", "codex_cli", "ollama"}
 
 # ── OpenRouter live pricing ──────────────────────────────────────────────────
 _OR_PRICES: dict[str, dict] = {}   # slug -> per-Mtok pricing dict

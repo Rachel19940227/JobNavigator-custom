@@ -1,5 +1,9 @@
 # JobNavigator
 
+> Docker users can run scoring and resume tailoring through an authenticated
+> ChatGPT/Codex subscription without an OpenAI API key. See
+> [Codex CLI subscription provider](docs/CODEX_CLI_PROVIDER.md).
+
 **Self-hosted job-hunt automation.**
 
 Scrape career pages and aggregators, score jobs against your résumés with an LLM, tailor résumés and cover letters, auto-fill applications from your persona, get Telegram alerts, track every application.

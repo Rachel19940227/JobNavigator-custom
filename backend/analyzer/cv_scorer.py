@@ -369,6 +369,7 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
     call_success = True
     call_error = None
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    dispatch_metadata = {}
     return_value = None
 
     try:
@@ -379,6 +380,9 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
                               provider=provider_for_log, model=model_for_log, api_key=scoring_api_key)
         text = resp["text"]
         usage = resp.get("usage", usage)
+        dispatch_metadata = {k: resp.get(k) for k in (
+            "requested_provider", "actual_provider", "actual_model", "fallback_used",
+            "fallback_reason", "codex_error_category", "attempt_count") if k in resp}
         # If call_llm fell back to the secondary pair, log what actually ran.
         provider_for_log = resp.get("provider") or provider_for_log
         model_for_log = resp.get("model") or model_for_log
@@ -447,6 +451,7 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
                 job_id=getattr(job, "id", None),
                 success=call_success,
                 error=call_error,
+                metadata=dispatch_metadata,
             )
         except Exception as e:
             logger.warning(f"log_llm_call failed in scorer (non-fatal): {e}")

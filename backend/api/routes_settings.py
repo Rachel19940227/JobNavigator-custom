@@ -92,6 +92,10 @@ def update_settings(updates: dict, db: Session = Depends(get_db)):
     if "scoring_max_concurrent" in updated:
         _reconfigure("reset_scoring_semaphore", reset_scoring_semaphore)
 
+    if {"codex_max_concurrency", "codex_timeout_seconds"} & set(updated):
+        from backend.analyzer.codex_gateway import reset_codex_semaphore
+        reset_codex_semaphore()
+
     if "tailoring_max_concurrent" in updated:
         def _reset_tailoring():
             from backend.api.routes_resumes import reset_tailoring_semaphore

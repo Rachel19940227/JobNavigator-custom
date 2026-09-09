@@ -88,6 +88,68 @@ function backupToSession() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // A JobNavigator Open Job Link carries the selected job + tailored resume in
+  // the URL fragment. Keep the handoff scoped to this tab and expire it quickly.
+  if (msg.type === 'application_assets_handoff' && sender.tab && msg.jobId && msg.resumeId) {
+    const key = `applicationAssets:${sender.tab.id}`;
+    chrome.storage.session.set({ [key]: {
+      jobId: msg.jobId, resumeId: msg.resumeId, createdAt: Date.now()
+    }}).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'application_assets_get' && sender.tab) {
+    const key = `applicationAssets:${sender.tab.id}`;
+    chrome.storage.session.get(key).then(data => {
+      const assets = data[key];
+      if (!assets || Date.now() - assets.createdAt > 60 * 60 * 1000) {
+        if (assets) chrome.storage.session.remove(key);
+        sendResponse({ assets: null });
+      } else sendResponse({ assets });
+    });
+    return true;
+  }
+
+  if (msg.type === 'application_asset_fetch' && sender.tab) {
+    const key = `applicationAssets:${sender.tab.id}`;
+    chrome.storage.session.get(key).then(async data => {
+      const assets = data[key];
+      if (!assets || Date.now() - assets.createdAt > 60 * 60 * 1000) {
+        sendResponse({ error: 'No active JobNavigator application handoff' });
+        return;
+      }
+      const settings = await chrome.storage.sync.get(['serverUrl', 'apiKey']);
+      const serverUrl = settings.serverUrl || 'http://localhost';
+      const headers = settings.apiKey ? { 'X-API-Key': settings.apiKey } : {};
+      try {
+        let pdfUrl;
+        if (msg.kind === 'resume') {
+          pdfUrl = `${serverUrl}/api/resumes/${assets.resumeId}/pdf`;
+        } else {
+          const listResp = await fetch(`${serverUrl}/api/cover-letters?job_id=${encodeURIComponent(assets.jobId)}`, { headers });
+          if (!listResp.ok) throw new Error(`Cover letter lookup failed: ${listResp.status}`);
+          const letters = await listResp.json();
+          const letter = letters.find(x => x.resume_id === assets.resumeId) || letters[0];
+          if (!letter) { sendResponse({ missing: true }); return; }
+          pdfUrl = `${serverUrl}/api/cover-letters/${letter.id}/pdf`;
+        }
+        const response = await fetch(pdfUrl, { headers });
+        if (!response.ok) throw new Error(`PDF download failed: ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        const disposition = response.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="([^"]+)"/i);
+        sendResponse({ base64: btoa(binary), filename: match ? match[1] : `JobNavigator_${msg.kind}.pdf` });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    });
+    return true;
+  }
+
   // Content script pushes captured IDs
   if (msg.type === 'linkedin_ids') {
     for (const id of msg.ids) capturedIds.add(id);
@@ -244,6 +306,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true; // Async response
   }
+});
+
+// Application forms sometimes open in a child tab. Preserve the local
+// job/resume selection for that tab without exposing document contents in the
+// URL or sending them anywhere until an upload field is actually present.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!tab.id || !tab.openerTabId) return;
+
+  const sourceKey = `applicationAssets:${tab.openerTabId}`;
+  const targetKey = `applicationAssets:${tab.id}`;
+  chrome.storage.session.get(sourceKey).then((stored) => {
+    if (stored[sourceKey]) {
+      return chrome.storage.session.set({ [targetKey]: stored[sourceKey] });
+    }
+  }).catch(() => {});
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  chrome.storage.session.remove(`applicationAssets:${tabId}`).catch(() => {});
 });
 
 // --- Application Autofill: streaming draft relay (SSE over a long-lived port) ---

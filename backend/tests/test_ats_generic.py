@@ -1,5 +1,6 @@
 """Tests for ats/generic.py — DOM-fallback scraper for unknown career pages."""
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 
 def test_generic_exposes_dom_helpers():
@@ -57,3 +58,153 @@ async def test_generic_scrape_launches_browser_when_none(monkeypatch):
     result = await scrape("https://unknown-career-page.example.com/jobs", max_pages=1)
     # Just verify it ran without crashing
     assert isinstance(result, (list, tuple))
+
+
+def test_gojobs_url_detection_is_host_specific():
+    from backend.scraper.ats.generic import _is_gojobs
+    assert _is_gojobs("https://www.gojobs.gov.on.ca/Search.aspx") is True
+    assert _is_gojobs("https://gojobs.gov.on.ca/Search.aspx?Language=English") is True
+    assert _is_gojobs("https://gojobs.gov.on.ca.evil.example/Search.aspx") is False
+    assert _is_gojobs("https://jobs.ontario.ca/") is False
+
+
+@pytest.mark.asyncio
+async def test_gojobs_preview_links_are_extracted():
+    from backend.scraper.ats.generic import (
+        GOJOBS_JOB_LINK_SELECTOR, _extract_job_links_from_page,
+    )
+    link = MagicMock()
+    link.get_attribute = AsyncMock(return_value="/Preview.aspx?Language=English&JobID=249065")
+    link.query_selector = AsyncMock(return_value=None)
+    link.inner_text = AsyncMock(return_value="Business Analyst (1)")
+
+    page = MagicMock()
+    page.evaluate = AsyncMock()
+    page.query_selector_all = AsyncMock(
+        side_effect=lambda selector: [link] if selector == GOJOBS_JOB_LINK_SELECTOR else []
+    )
+
+    jobs = await _extract_job_links_from_page(
+        page, "https://www.gojobs.gov.on.ca/Search.aspx"
+    )
+    assert jobs == [{
+        "title": "Business Analyst (1)",
+        "url": "https://www.gojobs.gov.on.ca/Preview.aspx?Language=English&JobID=249065",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_gojobs_preparation_clicks_search_and_waits_for_results():
+    from backend.scraper.ats.generic import (
+        GOJOBS_JOB_LINK_SELECTOR, _prepare_gojobs_search,
+    )
+    button = MagicMock()
+    button.click = AsyncMock()
+    page = MagicMock()
+    page.query_selector = AsyncMock(return_value=button)
+    page.wait_for_selector = AsyncMock()
+
+    await _prepare_gojobs_search(page)
+
+    page.query_selector.assert_awaited_once_with("#ctl00_MainContent_btnSearch")
+    button.click.assert_awaited_once_with(timeout=5000)
+    page.wait_for_selector.assert_awaited_once_with(
+        GOJOBS_JOB_LINK_SELECTOR, timeout=15000
+    )
+
+
+@pytest.mark.asyncio
+async def test_gojobs_preparation_reports_radware_captcha():
+    from backend.scraper.ats.generic import _prepare_gojobs_search
+
+    page = MagicMock()
+    page.url = "https://validate.perfdrive.com/challenge"
+    page.query_selector = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Radware CAPTCHA"):
+        await _prepare_gojobs_search(page)
+    page.query_selector.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pagination_respects_max_pages_and_deduplicates(monkeypatch):
+    from backend.scraper.ats import generic
+    page = MagicMock()
+    pages = [
+        [{"title": "One", "url": "https://example.test/job/1"}],
+        [
+            {"title": "One", "url": "https://example.test/job/1"},
+            {"title": "Two", "url": "https://example.test/job/2"},
+        ],
+        [{"title": "Three", "url": "https://example.test/job/3"}],
+    ]
+    extract = AsyncMock(side_effect=pages)
+    click_next = AsyncMock(return_value=True)
+    monkeypatch.setattr(generic, "_extract_job_links_from_page", extract)
+    monkeypatch.setattr(generic, "_click_next_page", click_next)
+    monkeypatch.setattr(generic.asyncio, "sleep", AsyncMock())
+
+    jobs = await generic._extract_all_pages(
+        page, "https://example.test/jobs", max_pages=2
+    )
+
+    assert [job["title"] for job in jobs] == ["One", "Two"]
+    assert extract.await_count == 2
+    assert click_next.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_postback_next_waits_for_navigation(monkeypatch):
+    from backend.scraper.ats import generic
+    button = MagicMock()
+    button.is_visible = AsyncMock(return_value=True)
+    button.get_attribute = AsyncMock(
+        side_effect=lambda name: (
+            "javascript:__doPostBack('ctl00$MainContent$lnkButton_Next','')"
+            if name == "href" else None
+        )
+    )
+    button.evaluate = AsyncMock(
+        side_effect=lambda expression: "A" if "tagName" in expression else "Next"
+    )
+    button.bounding_box = AsyncMock(return_value={"width": 50, "height": 20})
+    button.click = AsyncMock()
+
+    navigation = MagicMock()
+    navigation.__aenter__ = AsyncMock()
+    navigation.__aexit__ = AsyncMock(return_value=False)
+    page = MagicMock()
+    page.evaluate = AsyncMock()
+    page.expect_navigation = MagicMock(return_value=navigation)
+    page.query_selector = AsyncMock(
+        side_effect=lambda selector: button if selector == 'a:has-text("Next")' else None
+    )
+    monkeypatch.setattr(generic.asyncio, "sleep", AsyncMock())
+
+    assert await generic._click_next_page(page) is True
+    page.expect_navigation.assert_called_once_with(
+        wait_until="domcontentloaded", timeout=15000
+    )
+    button.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generic_scrape_prepares_only_gojobs(monkeypatch):
+    from backend.scraper.ats import generic
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.route = AsyncMock()
+    prepare = AsyncMock()
+    monkeypatch.setattr(generic, "_prepare_gojobs_search", prepare)
+    monkeypatch.setattr(generic, "_wait_for_content", AsyncMock())
+    monkeypatch.setattr(generic, "_extract_all_pages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(generic, "_new_page", AsyncMock(return_value=page))
+    monkeypatch.setattr(generic, "_close_page", AsyncMock())
+
+    browser = MagicMock()
+    await generic.scrape("https://www.gojobs.gov.on.ca/Search.aspx", browser=browser)
+    prepare.assert_awaited_once_with(page)
+
+    prepare.reset_mock()
+    await generic.scrape("https://careers.example.com/jobs", browser=browser)
+    prepare.assert_not_awaited()

@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -14,6 +14,41 @@ from backend.models.db import SessionLocal, Search, Job, Setting, get_existing_e
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 
 logger = logging.getLogger("jobnavigator.scraper.sources.jobspy")
+_PRECISE_LINKEDIN_POSTED_AT = {}
+
+
+def _patch_linkedin_new_date_class():
+    """JobSpy 1.1.82 only recognizes LinkedIn's old date CSS class.
+
+    LinkedIn currently emits ``job-search-card__listdate--new``. Add the old
+    class before JobSpy parses each card so its existing date parser works.
+    """
+    try:
+        from jobspy.linkedin import LinkedIn
+        if getattr(LinkedIn, "_jobnavigator_date_patch", False):
+            return
+        original = LinkedIn._process_job
+
+        def patched(self, job_card, job_id, full_descr):
+            tag = job_card.find("time", class_="job-search-card__listdate--new")
+            if tag is not None:
+                classes = list(tag.get("class", []))
+                if "job-search-card__listdate" not in classes:
+                    classes.append("job-search-card__listdate")
+                    tag["class"] = classes
+                label = tag.get_text(" ", strip=True).lower()
+                match = re.search(r"(\d+)\s+(minute|hour|day)s?\s+ago", label)
+                if match:
+                    amount = int(match.group(1))
+                    unit = match.group(2)
+                    delta = timedelta(**{f"{unit}s": amount})
+                    _PRECISE_LINKEDIN_POSTED_AT[f"li-{job_id}"] = datetime.now(timezone.utc) - delta
+            return original(self, job_card, job_id, full_descr)
+
+        LinkedIn._process_job = patched
+        LinkedIn._jobnavigator_date_patch = True
+    except Exception as exc:
+        logger.warning("Could not apply LinkedIn posted-date compatibility patch: %s", exc)
 
 
 def _clean(v):
@@ -192,6 +227,7 @@ def _run_sync(search, proxy_url: str = None) -> dict:
 
     try:
         from jobspy import scrape_jobs
+        _patch_linkedin_new_date_class()
 
         # Build source list — filter out 'direct' which is Playwright
         sources = [s for s in (search.sources or []) if s != "direct"]
@@ -208,6 +244,7 @@ def _run_sync(search, proxy_url: str = None) -> dict:
             "hours_old": search.hours_old or 24,
             "job_type": search.job_type or "fulltime",
             "country_indeed": "USA",
+            "linkedin_fetch_description": "linkedin" in sources,
             "verbose": 2,
         }
 
@@ -285,6 +322,7 @@ def _run_sync(search, proxy_url: str = None) -> dict:
         h1b_loop = _asyncio.new_event_loop()
         try:
             existing_ids = get_existing_external_ids(db)
+            existing_posted = dict(db.query(Job.external_id, Job.posted_at).all())
             company_lookup = build_company_lookup(db)
             phrases = load_exclusion_phrases(db)
 
@@ -295,6 +333,21 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                 ext_id = make_external_id(company, title, url)
 
                 if ext_id in existing_ids:
+                    parsed_posted = _row_posted_at(row)
+                    description = _clean(row.get("description"))
+                    updates = {}
+                    if parsed_posted:
+                        updates[Job.posted_at] = parsed_posted
+                    if description:
+                        updates[Job.description] = description
+                        from backend.analyzer.h1b_checker import scan_jd_for_h1b_flags
+                        body_result = scan_jd_for_h1b_flags(description, phrases)
+                        if body_result["jd_flag"]:
+                            updates[Job.h1b_jd_flag] = True
+                            updates[Job.h1b_jd_snippet] = body_result["jd_snippet"]
+                            updates[Job.status] = "ignored"
+                    if updates:
+                        db.query(Job).filter(Job.external_id == ext_id).update(updates)
                     continue
 
                 content_hash = make_content_hash(company, title)
@@ -320,6 +373,7 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                     location=_clean(row.get("location")),
                     remote=None,  # JobSpy doesn't always return this reliably
                     status="new",
+                    posted_at=_row_posted_at(row),
                     seen=False,
                     saved=False,
                 )
@@ -450,3 +504,23 @@ def _run_sync(search, proxy_url: str = None) -> dict:
 async def run(search, proxy_url: str = None) -> dict:
     """Async entry point — offloads the synchronous JobSpy call to a thread."""
     return await asyncio.to_thread(_run_sync, search, proxy_url)
+
+
+def _parse_posted_at(value):
+    """Normalize JobSpy's pandas/datetime/string date_posted value to UTC."""
+    if value is None:
+        return None
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return None
+        parsed = pd.to_datetime(value, utc=True)
+        return parsed.to_pydatetime()
+    except Exception:
+        return None
+
+
+def _row_posted_at(row):
+    """Prefer LinkedIn's relative timestamp, which includes hours/minutes."""
+    precise = _PRECISE_LINKEDIN_POSTED_AT.get(str(row.get("id", "")))
+    return precise or _parse_posted_at(row.get("date_posted"))

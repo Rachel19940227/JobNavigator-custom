@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import api from '../api'
-import { ExternalLink, Bookmark, X, CheckCircle, ChevronDown, ChevronUp, Filter, Ban, Info, FileText, Loader2, ScrollText, RotateCw, Mail } from 'lucide-react'
+import { ExternalLink, Bookmark, X, CheckCircle, ChevronDown, ChevronUp, Filter, Ban, Info, FileText, Loader2, ScrollText, RotateCw, Mail, Plus } from 'lucide-react'
 
 // Toast with slide/fade in on mount and out when `t.leaving` flips (no lib needed).
 function ToastItem({ t, label, onClose }) {
@@ -111,6 +111,10 @@ export default function JobFeed() {
   })
   const [selectedJob, setSelectedJob] = useState(null)
   const [viewCached, setViewCached] = useState(false)
+  const [showAddJobModal, setShowAddJobModal] = useState(false)
+  const [addJobUrl, setAddJobUrl] = useState('')
+  const [addingJob, setAddingJob] = useState(false)
+  const [addJobError, setAddJobError] = useState('')
   const [companyList, setCompanyList] = useState(null)
   const [sourceList, setSourceList] = useState(null)
   const [verdictList, setVerdictList] = useState(null)
@@ -799,6 +803,26 @@ export default function JobFeed() {
     await updateJob(job.id, { status: 'applied' })
   }
 
+  const addJobFromUrl = async (e) => {
+    e.preventDefault()
+    if (!addJobUrl.trim()) return
+    setAddingJob(true)
+    setAddJobError('')
+    try {
+      const { data: job } = await api.post('/jobs/import-url', { url: addJobUrl.trim() })
+      setJobs(prev => [job, ...prev.filter(j => j.id !== job.id)].slice(0, limit))
+      if (job.new) setTotal(prev => prev + 1)
+      setSelectedJob(job)
+      setSelectedIndex(0)
+      setViewCached(false)
+      setShowAddJobModal(false)
+      setAddJobUrl('')
+    } catch (err) {
+      setAddJobError(err.response?.data?.detail || err.message || 'Could not import this job')
+    }
+    setAddingJob(false)
+  }
+
   const ignoreCompany = async (e, companyName) => {
     e.stopPropagation()
     if (!companyName || !confirm(`Add "${companyName}" to global ignore list?`)) return
@@ -938,6 +962,12 @@ export default function JobFeed() {
             </div>
             <div className="flex items-center gap-1">
               <button
+                onClick={() => { setAddJobError(''); setShowAddJobModal(true) }}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-white bg-blue-600 rounded hover:bg-blue-700"
+              >
+                <Plus size={12} /> Add Job
+              </button>
+              <button
                 onClick={() => { setFilters(DEFAULT_FILTERS); setOffset(0); setTitleSearch(''); setDebouncedTitleSearch(''); setSortBy('date'); setMinSalary(''); setMaxSalary('') }}
                 className="px-2 py-1 text-xs text-red-500 border border-red-200 rounded hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/30"
               >Reset</button>
@@ -985,7 +1015,7 @@ export default function JobFeed() {
                 <div className="flex items-center gap-1 flex-wrap">
                   <span className="text-[10px] text-gray-400 dark:text-gray-500">Source</span>
                   {(sourceList || []).map(src => {
-                    const labels = { direct: 'Direct', extension: 'Extension', jobspy_linkedin: 'LinkedIn', jobspy_indeed: 'Indeed', jobspy_zip_recruiter: 'Zip', jobspy_google: 'Google', levels_fyi: 'Levels', linkedin_personal: 'LI Personal', linkedin_extension: 'LI Extension', jobright: 'Jobright', freehire: 'FreeHire', playwright_url: 'Playwright', playwright_direct: 'Career' }
+                    const labels = { direct: 'Direct', extension: 'Extension', jobspy_linkedin: 'LinkedIn', manual_linkedin: 'LinkedIn Manual', manual_url: 'Manual URL', jobspy_indeed: 'Indeed', jobspy_zip_recruiter: 'Zip', jobspy_google: 'Google', levels_fyi: 'Levels', linkedin_personal: 'LI Personal', linkedin_extension: 'LI Extension', jobright: 'Jobright', freehire: 'FreeHire', playwright_url: 'Playwright', playwright_direct: 'Career' }
                     return (
                     <button key={src} onClick={() => toggleFilter('source', src)}
                       className={`px-1.5 py-0.5 text-[11px] rounded border ${
@@ -1182,7 +1212,7 @@ export default function JobFeed() {
                             </div>
                           )}
                         </div>
-                        {job.discovered_at && <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-auto">{timeAgo(job.discovered_at)}</span>}
+                        {(job.posted_at || job.discovered_at) && <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-auto">{job.posted_at ? 'Posted' : 'Discovered'} {timeAgo(job.posted_at || job.discovered_at)}</span>}
                       </div>
                       <div className="flex flex-col items-center gap-0.5 ml-1 self-start">
                         <button onClick={e => saveAndAdvance(e, job)}
@@ -1297,7 +1327,23 @@ export default function JobFeed() {
             </div>
           </div>
 
-          {viewCached && selectedJob.has_cached_page ? (
+          {selectedJob.description ? (
+            <div className="flex-1 overflow-y-auto bg-white dark:bg-gray-800 px-8 py-6">
+              <div className="max-w-4xl mx-auto">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400 mb-5 pb-4 border-b dark:border-gray-700">
+                  <span>{selectedJob.company}</span>
+                  {selectedJob.location && <span>{selectedJob.location}</span>}
+                  {(selectedJob.posted_at || selectedJob.discovered_at) && (
+                    <span>{selectedJob.posted_at ? 'Posted' : 'Discovered'} {timeAgo(selectedJob.posted_at || selectedJob.discovered_at)}</span>
+                  )}
+                </div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Job Description</h2>
+                <div className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-700 dark:text-gray-300">
+                  {selectedJob.description}
+                </div>
+              </div>
+            </div>
+          ) : viewCached && selectedJob.has_cached_page ? (
             <iframe
               key={`cached-${selectedJob.id}`}
               src={`/api/jobs/${selectedJob.id}/cached-page`}
@@ -1306,13 +1352,14 @@ export default function JobFeed() {
               title="Cached job posting"
             />
           ) : selectedJob.url ? (
-            <iframe
-              key={selectedJob.id}
-              src={selectedJob.url}
-              className="flex-1 w-full border-0"
-              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-              title="Job posting"
-            />
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-8 text-gray-500 dark:text-gray-400">
+              <p className="text-sm font-medium mb-2">Job description has not been fetched yet.</p>
+              <p className="text-xs mb-4">LinkedIn blocks embedded pages. Run this search again to fetch and store the description locally.</p>
+              <a href={selectedJob.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded dark:text-blue-400 dark:hover:bg-blue-900/30">
+                <ExternalLink size={14} /> Open on LinkedIn
+              </a>
+            </div>
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
               No URL available for this job
@@ -1437,6 +1484,8 @@ export default function JobFeed() {
               {/* Summary */}
               {rpt.summary && <p className="text-sm text-gray-700 dark:text-gray-300">{rpt.summary}</p>}
 
+              {rpt.job_category && <p className="text-xs text-gray-500 dark:text-gray-400"><strong>Job Category:</strong> {rpt.job_category}</p>}
+
               {/* Keyword coverage */}
               {rpt.keyword_coverage_pct != null && (
                 <div>
@@ -1506,6 +1555,15 @@ export default function JobFeed() {
                 </div>
               )}
 
+              {(rpt.experience_gaps?.length > 0 || rpt.potential_concerns?.length > 0) && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
+                  <h3 className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1">Experience Gaps / Potential Concerns</h3>
+                  {[...(rpt.experience_gaps || []), ...(rpt.potential_concerns || [])].map((item, i) => (
+                    <p key={i} className="text-xs text-amber-700 dark:text-amber-400">{item}</p>
+                  ))}
+                </div>
+              )}
+
               {/* ATS Tip */}
               {rpt.ats_tip && (
                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
@@ -1549,6 +1607,33 @@ export default function JobFeed() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showAddJobModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onClick={() => !addingJob && setShowAddJobModal(false)}>
+          <form onSubmit={addJobFromUrl}
+            className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-[520px] max-w-[90vw]"
+            onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Add Job from URL</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+              Paste a LinkedIn or public employer job URL. JobNavigator will fetch and store the title, company, location, and full description locally.
+            </p>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Job URL</label>
+            <input autoFocus type="url" value={addJobUrl}
+              onChange={e => setAddJobUrl(e.target.value)}
+              placeholder="https://company.example/jobs/123"
+              className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600" />
+            {addJobError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{addJobError}</p>}
+            <div className="flex justify-end gap-2 mt-5">
+              <button type="button" disabled={addingJob} onClick={() => setShowAddJobModal(false)}
+                className="px-4 py-1.5 text-sm border rounded dark:border-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">Cancel</button>
+              <button type="submit" disabled={addingJob || !addJobUrl.trim()}
+                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2">
+                {addingJob ? <><Loader2 size={14} className="animate-spin" /> Importing...</> : <><Plus size={14} /> Add Job</>}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

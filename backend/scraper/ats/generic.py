@@ -10,6 +10,41 @@ from backend.scraper._shared.filters import _validate_job
 
 logger = logging.getLogger("jobnavigator.scraper.ats.generic")
 
+GOJOBS_JOB_LINK_SELECTOR = (
+    'a[href*="Preview.aspx"][href*="JobID="][href*="Language=English"]'
+)
+
+
+def _is_gojobs(url: str) -> bool:
+    """Return True only for the Ontario Public Service GO Jobs host."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+        return host in {"gojobs.gov.on.ca", "www.gojobs.gov.on.ca"}
+    except ValueError:
+        return False
+
+
+async def _prepare_gojobs_search(page):
+    """Trigger GO Jobs' required empty-filter search and await real results."""
+    logger.info("Ontario GO Jobs detected; triggering search")
+    if "validate.perfdrive.com" in (page.url or ""):
+        logger.warning("Ontario GO Jobs blocked the scraper with a Radware CAPTCHA")
+        raise RuntimeError(
+            "Ontario GO Jobs blocked the automated browser with a Radware CAPTCHA; "
+            "retry later after the challenge has cleared"
+        )
+    search_button = await page.query_selector("#ctl00_MainContent_btnSearch")
+    if not search_button:
+        logger.warning("Ontario GO Jobs search preparation failed: Search button not found")
+        raise RuntimeError("Ontario GO Jobs Search button was not found")
+    try:
+        await search_button.click(timeout=5000)
+        await page.wait_for_selector(GOJOBS_JOB_LINK_SELECTOR, timeout=15000)
+    except Exception as exc:
+        logger.warning("Ontario GO Jobs search preparation failed: results did not load: %s", exc)
+        raise RuntimeError("Ontario GO Jobs search results did not load") from exc
+    logger.info("Ontario GO Jobs search results loaded")
+
 
 # ── Route blocking ───────────────────────────────────────────────────────────
 
@@ -46,6 +81,7 @@ async def _extract_job_links_from_page(page, base_url: str, debug: bool = False)
 
     # Specific selectors first — if these find results, skip the broad ones
     specific_selectors = [
+        GOJOBS_JOB_LINK_SELECTOR,
         '[class*="position-card"] a', '[class*="position-title"] a',
         '[data-automation-id="jobTitle"]',
         '.job-listing a', '.job-card a', '.opening a',
@@ -277,7 +313,17 @@ async def _click_next_page(page, debug: bool = False) -> bool | dict:
                     box = await btn.bounding_box()
                     if box and box["width"] > 20 and box["height"] > 10:
                         logger.info(f"Pagination: clicking text='{text_pat}' tag={tag}")
-                        await btn.click()
+                        href = await btn.get_attribute("href") or ""
+                        if "__doPostBack" in href:
+                            # ASP.NET pagination (Ontario GO Jobs) reloads the
+                            # same URL via POST. Wait for that navigation rather
+                            # than sampling the temporary empty DOM.
+                            async with page.expect_navigation(
+                                wait_until="domcontentloaded", timeout=15000
+                            ):
+                                await btn.click()
+                        else:
+                            await btn.click()
                         if debug:
                             debug_info["clicked"] = True
                             debug_info["clicked_via"] = candidate
@@ -306,6 +352,8 @@ async def scrape(url: str, browser=None, max_pages: int = 5, debug: bool = False
         try:
             await _setup_route_blocks(page)
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if _is_gojobs(url):
+                await _prepare_gojobs_search(page)
             await _wait_for_content(page)
             result = await _extract_all_pages(page, url, max_pages=max_pages, debug=debug)
             return result

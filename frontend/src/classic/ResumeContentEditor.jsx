@@ -35,7 +35,7 @@ export function CollapsibleSection({ title, defaultOpen = true, children, badge 
   )
 }
 
-export function FieldInput({ label, value, onChange, onBlur, placeholder, multiline, rows }) {
+export function FieldInput({ label, value, onChange, onBlur, placeholder, multiline, rows, type = 'text' }) {
   const cls = "border rounded px-2 py-1.5 text-sm w-full dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600"
   const handleBoldShortcut = (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
@@ -72,7 +72,7 @@ export function FieldInput({ label, value, onChange, onBlur, placeholder, multil
         />
       ) : (
         <input
-          type="text"
+          type={type}
           className={cls}
           value={value || ''}
           onChange={e => onChange(e.target.value)}
@@ -121,7 +121,7 @@ export default function ResumeContentEditor({ value, onChange }) {
 
   const addEducation = () => mutate(d => {
     d.education = d.education || []
-    d.education.push({ school: '', location: '', degree: '' })
+    d.education.push({ school: '', location: '', degree: '', start_date: '', end_date: '' })
   })
   const removeEducation = (idx) => mutate(d => { d.education.splice(idx, 1) })
 
@@ -331,6 +331,10 @@ export default function ResumeContentEditor({ value, onChange }) {
               <FieldInput label="Location" value={edu.location} onChange={v => updateField(`education.${idx}.location`, v)} />
             </div>
             <FieldInput label="Degree" value={edu.degree} onChange={v => updateField(`education.${idx}.degree`, v)} />
+            <div className="grid grid-cols-2 gap-x-3">
+              <FieldInput type="month" label="Start month" value={edu.start_date} onChange={v => updateField(`education.${idx}.start_date`, v)} />
+              <FieldInput type="month" label="End month" value={edu.end_date} onChange={v => updateField(`education.${idx}.end_date`, v)} />
+            </div>
           </div>
         ))}
         <button onClick={addEducation} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm flex items-center gap-1">

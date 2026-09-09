@@ -41,6 +41,15 @@ _TITLE_ROOTS = (
 )
 
 
+def _download_filename(job_title: str, candidate_name: str, document_type: str) -> str:
+    """Build a filesystem-safe `{Job}_{Candidate}_{Type}.pdf` filename."""
+    title = re.sub(r"[^A-Za-z0-9]+", "_", job_title or "Job").strip("_") or "Job"
+    title = title[:100].rstrip("_")
+    name_parts = re.findall(r"[A-Za-z0-9]+", candidate_name or "Candidate")
+    candidate = "".join(part.capitalize() for part in name_parts) or "Candidate"
+    return f"{title}_{candidate}_{document_type}.pdf"
+
+
 def _normalize_company(s: str) -> str:
     """Lowercase + strip common suffixes (Inc., Corp., LLC, GmbH, AG, ...)."""
     if not s:
@@ -276,6 +285,11 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     from markupsafe import Markup
     env.filters['bold'] = lambda text: Markup(_re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', _re.sub(r'[<>&]', lambda m: {'<':'&lt;','>':'&gt;','&':'&amp;'}[m.group()], text or '')))
+    env.filters['month_year'] = lambda value: (
+        f"{value[5:7]}/{value[:4]}"
+        if isinstance(value, str) and _re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value)
+        else (value or "")
+    )
     template = env.get_template("template.html.j2")
 
     # Embed fonts as base64 data URIs (file:// blocked by Chromium in set_content)
@@ -290,6 +304,32 @@ def _render_html(json_data: dict, template_name: str, page_format: str) -> str:
         fonts_base="",
         fonts=fonts,
     )
+    # Optional per-resume typography controls.  Keep legacy resumes on each
+    # template's native spacing until the user explicitly chooses an override.
+    layout = json_data.get("layout") if isinstance(json_data, dict) else None
+    layout = layout if isinstance(layout, dict) else {}
+
+    def _bounded_number(key: str, minimum: float, maximum: float):
+        try:
+            value = float(layout[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if minimum <= value <= maximum else None
+
+    line_spacing = _bounded_number("line_spacing", 0.8, 2.0)
+    paragraph_spacing = _bounded_number("paragraph_spacing", 0.0, 24.0)
+    overrides = []
+    if line_spacing is not None:
+        overrides.append(
+            f".page, .page * {{ line-height: {line_spacing:g} !important; }}"
+        )
+    if paragraph_spacing is not None:
+        overrides.append(
+            ".page p, .page li, .page .summary-text, .page .entry, "
+            f".page .skill-line {{ margin-bottom: {paragraph_spacing:g}pt !important; }}"
+        )
+    if overrides:
+        html = html.replace("</head>", f"<style>{''.join(overrides)}</style></head>", 1)
     return html
 
 
@@ -1180,20 +1220,16 @@ async def export_pdf(resume_id: str, template: Optional[str] = None, format: Opt
         logger.error(f"PDF generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
-    # Filename: {Name}_{Type}_Resume_{number}.pdf \u2014 Name is the candidate header name,
-    # Type is the base resume name, number is the linked job's short_id (omitted for base resumes with none).
-    header_name = (resume.json_data or {}).get("header", {}).get("name", "Resume").replace(" ", "")
-    base_name = (resume.name.split(" \u2192 ")[0] if " \u2192 " in (resume.name or "") else resume.name) or "Resume"
-    base_name = base_name.replace(" ", "")
-    number = ""
+    candidate_name = (resume.json_data or {}).get("header", {}).get("name", "Candidate")
+    job_title = resume.name or "Resume"
     if resume.job_id:
         job_for_name = db.query(Job).filter(Job.id == resume.job_id).first()
-        if job_for_name and job_for_name.short_id:
-            number = f"_{job_for_name.short_id}"
-    filename = f"{header_name}_{base_name}_Resume{number}".encode("ascii", "replace").decode()
+        if job_for_name and job_for_name.title:
+            job_title = job_for_name.title
+    filename = _download_filename(job_title, candidate_name, "Resume")
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{filename}.pdf"',
+        "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Page-Count": str(page_count),
     }
     if page_count > 1:
@@ -1241,7 +1277,8 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
     if len(extracted_text.strip()) < 50:
         raise HTTPException(status_code=422, detail="Could not extract enough text from PDF. It may be image-based.")
 
-    schema_example = '{"header":{"name":"","contact_items":[{"text":"location"},{"text":"email","url":"mailto:email"},{"text":"LinkedIn","url":"linkedin.com/in/..."},{"text":"phone"}]},"summary":"","experience":[{"company":"","title":"","location":"","date":"","description":"","bullets":[]}],"skills":{},"education":[{"school":"","location":"","degree":""}],"projects":[],"publications":[]}'
+    # Use LLM to parse extracted text into structured resume JSON
+    schema_example = '{"header":{"name":"","contact_items":[{"text":"location"},{"text":"email","url":"mailto:email"},{"text":"LinkedIn","url":"linkedin.com/in/..."},{"text":"phone"}]},"summary":"","experience":[{"company":"","title":"","location":"","date":"","description":"","bullets":[]}],"skills":{},"education":[{"school":"","location":"","degree":"","start_date":"YYYY-MM","end_date":"YYYY-MM"}],"projects":[],"publications":[]}'
 
     system_prompt = "You are a resume parser. Extract structured data from resume text. Return ONLY valid JSON, no markdown fences."
     user_prompt = (

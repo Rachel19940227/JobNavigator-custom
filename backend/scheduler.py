@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+from zoneinfo import ZoneInfo
 
 from backend.models.db import SessionLocal, Setting
 
@@ -43,6 +44,8 @@ def configure_scheduler():
     db = SessionLocal()
     try:
         scrape_interval = _int_setting(db, "scrape_interval_minutes")
+        scrape_cron = str(get_setting(db, "scrape_cron", "") or "").strip()
+        scheduler_timezone = str(get_setting(db, "scheduler_timezone", "America/Toronto") or "America/Toronto").strip()
         email_interval = _int_setting(db, "email_check_interval_minutes")
         backup_cron = str(get_setting(db, "backup_cron", "") or "").strip()
         digest_cron = str(get_setting(db, "digest_cron", "") or "").strip()
@@ -51,6 +54,12 @@ def configure_scheduler():
         reject_cron = str(get_setting(db, "reject_cron", "") or "").strip()
     finally:
         db.close()
+
+    try:
+        cron_timezone = ZoneInfo(scheduler_timezone)
+    except Exception:
+        logger.warning("Invalid scheduler timezone '%s'; using America/Toronto", scheduler_timezone)
+        cron_timezone = ZoneInfo("America/Toronto")
 
     def _add_cron_job(func, job_id, cron_expr):
         """Parse a 5-field cron expression and add to scheduler. Empty = skip."""
@@ -61,7 +70,7 @@ def configure_scheduler():
             if len(parts) == 5:
                 scheduler.add_job(
                     func,
-                    CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4]),
+                    CronTrigger(minute=parts[0], hour=parts[1], day=parts[2], month=parts[3], day_of_week=parts[4], timezone=cron_timezone),
                     id=job_id,
                     replace_existing=True,
                 )
@@ -73,7 +82,7 @@ def configure_scheduler():
     scheduler.remove_all_jobs()
 
     # Interval-based jobs (0 = disabled)
-    if scrape_interval > 0:
+    if scrape_interval > 0 and not scrape_cron:
         scheduler.add_job(
             run_all_scrapes,
             IntervalTrigger(minutes=scrape_interval),
@@ -90,6 +99,7 @@ def configure_scheduler():
         )
 
     # Cron-based jobs (empty = disabled)
+    _add_cron_job(run_all_scrapes, "scrape_all", scrape_cron)
     _add_cron_job(run_db_backup, "db_backup", backup_cron)
     _add_cron_job(send_daily_digest, "daily_digest", digest_cron)
     _add_cron_job(refresh_h1b_data, "h1b_refresh", h1b_cron)
@@ -367,5 +377,3 @@ async def run_db_backup():
                 run.summary += f" - {pruned} old pruned"
     except JobAlreadyRunningError as e:
         logger.warning(f"Scheduler skipped: {e}")
-
-

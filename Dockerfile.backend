@@ -20,12 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright Chromium browser only (skip install-deps since we handled it above)
 RUN playwright install chromium
 
-# Install Node.js + Claude Code CLI (for claude -p subscription-based scoring)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY backend/ ./backend/
 # .env is passed via docker-compose env_file, not baked into image
 

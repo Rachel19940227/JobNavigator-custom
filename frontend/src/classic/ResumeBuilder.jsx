@@ -66,7 +66,7 @@ function CollapsibleSection({ title, defaultOpen = true, children, badge }) {
   )
 }
 
-function FieldInput({ label, value, onChange, onBlur, placeholder, multiline, rows }) {
+function FieldInput({ label, value, onChange, onBlur, placeholder, multiline, rows, type = 'text' }) {
   const cls = "border rounded px-2 py-1.5 text-sm w-full dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600"
   const handleBoldShortcut = (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
@@ -104,7 +104,7 @@ function FieldInput({ label, value, onChange, onBlur, placeholder, multiline, ro
         />
       ) : (
         <input
-          type="text"
+          type={type}
           className={cls}
           value={value || ''}
           onChange={e => onChange(e.target.value)}
@@ -561,9 +561,40 @@ export default function ResumeBuilder() {
     triggerSave(editData, template, fmt)
   }
 
+  const updateLayoutSetting = (key, rawValue) => {
+    const updated = JSON.parse(JSON.stringify(editData))
+    updated.layout = updated.layout || {}
+    if (rawValue === '') delete updated.layout[key]
+    else updated.layout[key] = Number(rawValue)
+    if (Object.keys(updated.layout).length === 0) delete updated.layout
+    setEditData(updated)
+    triggerSave(updated)
+  }
+
+  const resetLayoutSpacing = () => {
+    const updated = JSON.parse(JSON.stringify(editData))
+    delete updated.layout
+    setEditData(updated)
+    triggerSave(updated)
+  }
+
   const pdfDownloadUrl = selectedId
     ? (api.defaults.baseURL || '').replace('/api', '') + '/api/resumes/' + selectedId + '/pdf?template=' + template + '&format=' + pageFormat
     : null
+
+  const jobLinkWithAssets = (() => {
+    if (!jobUrl || !jobId || !selectedId) return jobUrl
+    try {
+      const url = new URL(jobUrl)
+      const params = new URLSearchParams(url.hash.replace(/^#/, ''))
+      params.set('jn_job', jobId)
+      params.set('jn_resume', selectedId)
+      url.hash = params.toString()
+      return url.toString()
+    } catch {
+      return jobUrl
+    }
+  })()
 
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null)
   const prevBlobRef = useRef(null)
@@ -615,7 +646,7 @@ export default function ResumeBuilder() {
   const addEducation = () => {
     const updated = JSON.parse(JSON.stringify(editData))
     updated.education = updated.education || []
-    updated.education.push({ school: '', location: '', degree: '' })
+    updated.education.push({ school: '', location: '', degree: '', start_date: '', end_date: '' })
     setEditData(updated)
     triggerSave(updated)
   }
@@ -799,7 +830,7 @@ export default function ResumeBuilder() {
                   <Briefcase size={14} /> Open in Job Feed
                 </a>
                 {jobUrl && (
-                  <a href={jobUrl} target="_blank" rel="noopener noreferrer"
+                  <a href={jobLinkWithAssets} target="_blank" rel="noopener noreferrer"
                     className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 w-full"
                     onClick={() => setJobMenuOpen(false)}>
                     <ExternalLink size={14} /> Open Job Link
@@ -1052,6 +1083,38 @@ export default function ResumeBuilder() {
                   </button>
                 ))}
               </div>
+              <div className="border-t border-gray-100 dark:border-gray-700 mt-4 pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Spacing</label>
+                  {(editData.layout?.line_spacing != null || editData.layout?.paragraph_spacing != null) && (
+                    <button onClick={resetLayoutSpacing}
+                      className="text-[11px] text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">
+                      Use template defaults
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs text-gray-500 dark:text-gray-400">
+                    Line spacing
+                    <input type="number" min="0.8" max="2" step="0.05"
+                      value={editData.layout?.line_spacing ?? ''}
+                      placeholder="Template default"
+                      onChange={e => updateLayoutSetting('line_spacing', e.target.value)}
+                      className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-gray-800 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600" />
+                  </label>
+                  <label className="text-xs text-gray-500 dark:text-gray-400">
+                    Paragraph spacing (pt)
+                    <input type="number" min="0" max="24" step="1"
+                      value={editData.layout?.paragraph_spacing ?? ''}
+                      placeholder="Template default"
+                      onChange={e => updateLayoutSetting('paragraph_spacing', e.target.value)}
+                      className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-gray-800 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600" />
+                  </label>
+                </div>
+                <p className="mt-2 text-[10px] text-gray-400 dark:text-gray-500">
+                  Line: 0.8–2.0 · Paragraph: 0–24 pt. Settings are saved per resume.
+                </p>
+              </div>
             </div>
 
             {/* Header */}
@@ -1246,6 +1309,10 @@ export default function ResumeBuilder() {
                     <FieldInput label="Location" value={edu.location} onChange={v => updateField(`education.${idx}.location`, v)} />
                   </div>
                   <FieldInput label="Degree" value={edu.degree} onChange={v => updateField(`education.${idx}.degree`, v)} />
+                  <div className="grid grid-cols-2 gap-x-3">
+                    <FieldInput type="month" label="Start month" value={edu.start_date} onChange={v => updateField(`education.${idx}.start_date`, v)} />
+                    <FieldInput type="month" label="End month" value={edu.end_date} onChange={v => updateField(`education.${idx}.end_date`, v)} />
+                  </div>
                 </div>
               ))}
               <button onClick={addEducation} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm flex items-center gap-1">

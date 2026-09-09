@@ -1,6 +1,11 @@
 """Job listing and management endpoints."""
+import asyncio
+import json
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Annotated, Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -29,6 +34,261 @@ def _score_resume_names(db, job) -> list[str]:
     except Exception as e:
         logger.warning(f"Could not resolve resume names for job {getattr(job, 'id', '?')}: {e}")
         return []
+
+
+def _linkedin_job_id_from_url(url: str) -> str | None:
+    """Return the numeric job ID from a safe LinkedIn job URL."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not (
+        host == "linkedin.com" or host.endswith(".linkedin.com")
+    ):
+        return None
+    match = re.search(r"/jobs/view/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)", parsed.path)
+    if not match:
+        match = re.search(r"(?:^|&)currentJobId=(\d+)(?:&|$)", parsed.query)
+    return match.group(1) if match else None
+
+
+def _fetch_public_linkedin_job(linkedin_id: str) -> dict:
+    """Fetch one public LinkedIn posting without credentials or cloud AI."""
+    from bs4 import BeautifulSoup
+    from jobspy.linkedin import LinkedIn
+
+    canonical_url = f"https://www.linkedin.com/jobs/view/{linkedin_id}"
+    client = LinkedIn()
+    response = client.session.get(canonical_url, timeout=10)
+    response.raise_for_status()
+    if "linkedin.com/signup" in response.url:
+        raise ValueError("LinkedIn requires sign-in for this job")
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    def text_of(selector: str) -> str:
+        node = soup.select_one(selector)
+        return node.get_text(" ", strip=True) if node else ""
+
+    title = text_of("h1.top-card-layout__title") or text_of("h1")
+    company = text_of("a.topcard__org-name-link") or text_of("span.topcard__flavor")
+    location = text_of("span.topcard__flavor--bullet")
+    description_node = soup.select_one("div.show-more-less-html__markup")
+    description = description_node.get_text("\n", strip=True) if description_node else ""
+    if not title or not company or not description:
+        raise ValueError("LinkedIn did not expose complete public job details")
+
+    posted_at = None
+    posted_node = soup.select_one("time[datetime]")
+    if posted_node and posted_node.get("datetime"):
+        try:
+            posted_at = datetime.fromisoformat(posted_node["datetime"].replace("Z", "+00:00"))
+            if posted_at.tzinfo is None:
+                posted_at = posted_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            posted_at = None
+
+    return {
+        "linkedin_job_id": linkedin_id,
+        "title": title,
+        "company": company,
+        "location": location or None,
+        "description": description,
+        "url": canonical_url,
+        "posted_at": posted_at,
+    }
+
+
+def _parse_posted_at(value: str | None) -> datetime | None:
+    """Parse common ISO and RFC-like JobPosting dates."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            from email.utils import parsedate_to_datetime
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+async def _fetch_public_job_url(url: str) -> dict:
+    """Fetch a public job page and extract Schema.org JobPosting metadata."""
+    from bs4 import BeautifulSoup
+    from backend.scraper._shared.browser import _USER_AGENT
+    from backend.scraper._shared.url_safety import safe_get
+
+    response = await safe_get(url, timeout=20, headers={"User-Agent": _USER_AGENT})
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    posting = None
+    for node in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(node.string or node.get_text())
+        except (TypeError, json.JSONDecodeError):
+            continue
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
+                posting = candidate
+                break
+            if isinstance(candidate, dict):
+                graph = candidate.get("@graph", [])
+                posting = next((x for x in graph if isinstance(x, dict) and x.get("@type") == "JobPosting"), None)
+            if posting:
+                break
+        if posting:
+            break
+
+    def meta_content(prop: str) -> str:
+        node = soup.select_one(f'[itemprop="{prop}"]')
+        return (node.get("content") or node.get_text(" ", strip=True)) if node else ""
+
+    posting = posting or {}
+    title = str(posting.get("title") or meta_content("title") or "").strip()
+    organization = posting.get("hiringOrganization") or {}
+    organization_name = organization.get("name") if isinstance(organization, dict) else organization
+    company = str(organization_name or meta_content("hiringOrganization") or "").strip()
+
+    location = ""
+    job_location = posting.get("jobLocation") or {}
+    if isinstance(job_location, list):
+        job_location = job_location[0] if job_location else {}
+    address = job_location.get("address", {}) if isinstance(job_location, dict) else {}
+    if isinstance(address, dict):
+        location = ", ".join(str(address.get(k)).strip() for k in ("addressLocality", "addressRegion", "addressCountry") if address.get(k))
+    if not location:
+        location = ", ".join(filter(None, (
+            meta_content("addressLocality"), meta_content("addressRegion"), meta_content("addressCountry")
+        )))
+
+    description_value = posting.get("description") or ""
+    if description_value:
+        description = BeautifulSoup(str(description_value), "html.parser").get_text("\n", strip=True)
+    else:
+        description_node = soup.select_one('[itemprop="description"]')
+        description = description_node.get_text("\n", strip=True) if description_node else ""
+
+    if not title or not company or len(description) < 100:
+        raise ValueError("This page does not expose complete JobPosting details")
+
+    return {
+        "title": title,
+        "company": company,
+        "location": location or None,
+        "description": description[:50_000],
+        "url": str(response.url),
+        "posted_at": _parse_posted_at(str(posting.get("datePosted") or meta_content("datePosted") or "")),
+    }
+
+
+@router.post("/import-url")
+async def import_job_url(body: dict, db: Session = Depends(get_db)):
+    """Import one LinkedIn or other public JobPosting URL into the Job Feed."""
+    raw_url = (body.get("url") or "").strip()
+    linkedin_id = _linkedin_job_id_from_url(raw_url)
+    if linkedin_id:
+        return await import_linkedin_url(body, db)
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Enter a valid public job URL")
+
+    try:
+        data = await _fetch_public_job_url(raw_url)
+    except Exception as exc:
+        logger.warning("Manual job URL import failed for %s: %s", raw_url, exc)
+        raise HTTPException(status_code=422, detail=f"Could not read this job page: {str(exc)}") from exc
+
+    external_id = make_external_id(data["company"], data["title"], data["url"])
+    content_hash = make_content_hash(data["company"], data["title"])
+    existing = db.query(Job).filter(
+        (Job.external_id == external_id) | (Job.content_hash == content_hash) | (Job.url == data["url"])
+    ).first()
+    if existing:
+        existing.description = existing.description or data["description"]
+        existing.location = existing.location or data["location"]
+        existing.posted_at = existing.posted_at or data["posted_at"]
+        db.commit()
+        db.refresh(existing)
+        return {**_job_to_dict(existing), "new": False}
+
+    job = Job(
+        external_id=external_id,
+        content_hash=content_hash,
+        company=data["company"],
+        title=data["title"],
+        url=data["url"],
+        source="manual_url",
+        description=data["description"],
+        location=data["location"],
+        remote="remote" in (data["location"] or "").lower(),
+        posted_at=data["posted_at"],
+        status="new",
+    )
+    apply_salary_to_job(job, None)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return {**_job_to_dict(job), "new": True}
+
+
+@router.post("/import-linkedin-url")
+async def import_linkedin_url(body: dict, db: Session = Depends(get_db)):
+    """Import one public LinkedIn job URL into the normal Job Feed."""
+    raw_url = (body.get("url") or "").strip()
+    linkedin_id = _linkedin_job_id_from_url(raw_url)
+    if not linkedin_id:
+        raise HTTPException(status_code=400, detail="Enter a valid LinkedIn job URL")
+
+    existing = db.query(Job).filter(Job.linkedin_job_id == linkedin_id).first()
+    if existing:
+        return {**_job_to_dict(existing), "new": False}
+
+    try:
+        data = await asyncio.to_thread(_fetch_public_linkedin_job, linkedin_id)
+    except Exception as exc:
+        logger.warning("Manual LinkedIn import failed for %s: %s", linkedin_id, exc)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not read this LinkedIn job: {str(exc)}",
+        ) from exc
+
+    external_id = make_external_id(data["company"], data["title"], data["url"])
+    content_hash = make_content_hash(data["company"], data["title"])
+    existing = db.query(Job).filter(
+        (Job.external_id == external_id) | (Job.content_hash == content_hash)
+    ).first()
+    if existing:
+        existing.linkedin_job_id = existing.linkedin_job_id or linkedin_id
+        existing.description = existing.description or data["description"]
+        existing.location = existing.location or data["location"]
+        existing.posted_at = existing.posted_at or data["posted_at"]
+        db.commit()
+        db.refresh(existing)
+        return {**_job_to_dict(existing), "new": False}
+
+    job = Job(
+        external_id=external_id,
+        content_hash=content_hash,
+        linkedin_job_id=linkedin_id,
+        company=data["company"],
+        title=data["title"],
+        url=data["url"],
+        source="manual_linkedin",
+        description=data["description"],
+        location=data["location"],
+        remote="remote" in (data["location"] or "").lower(),
+        posted_at=data["posted_at"],
+        status="new",
+    )
+    apply_salary_to_job(job, None)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return {**_job_to_dict(job), "new": True}
 
 
 @router.post("/linkedin-import")
@@ -991,6 +1251,7 @@ def _job_to_dict(j: Job, tailored_resume_id=None, in_flight: list[str] | None = 
         "seen": j.seen,
         "saved": j.saved,
         "status": j.status,
+        "posted_at": j.posted_at.isoformat() if j.posted_at else None,
         "discovered_at": j.discovered_at.isoformat() if j.discovered_at else None,
         "has_tailored_resume": tailored_resume_id is not None,
         "tailored_resume_id": str(tailored_resume_id) if tailored_resume_id else None,

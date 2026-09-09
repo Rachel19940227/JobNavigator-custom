@@ -60,12 +60,23 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("Database initialized, seeded, scheduler started.")
 
-    # Warm the OpenRouter live-pricing cache used for LLM cost logging (non-fatal).
+    # Only contact OpenRouter when it is actually configured. Local-only Ollama
+    # deployments must not make unnecessary calls to cloud AI services.
+    db = SessionLocal()
     try:
-        from backend.analyzer.llm_cost import refresh_openrouter_prices
-        await refresh_openrouter_prices(force=True)
-    except Exception as e:
-        logger.warning(f"OpenRouter price warmup failed: {e}")
+        provider_values = {
+            row.value for row in db.query(Setting).filter(
+                Setting.key.in_(["llm_provider", "llm_fallback_provider", "scoring_llm_provider"])
+            ).all()
+        }
+    finally:
+        db.close()
+    if "openrouter" in provider_values:
+        try:
+            from backend.analyzer.llm_cost import refresh_openrouter_prices
+            await refresh_openrouter_prices(force=True)
+        except Exception as e:
+            logger.warning(f"OpenRouter price warmup failed: {e}")
 
     yield
 

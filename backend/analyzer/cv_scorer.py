@@ -87,8 +87,12 @@ def _flatten_resume(json_data: dict) -> str:
             degree = edu.get("degree", "")
             school = edu.get("school", "")
             loc = edu.get("location", "")
-            years = edu.get("years") or edu.get("year") or ""
-            tail = " ".join(x for x in (loc, years) if x)
+            start_date = edu.get("start_date", "")
+            end_date = edu.get("end_date", "")
+            date_range = " - ".join(value for value in (start_date, end_date) if value)
+            if not date_range:
+                date_range = edu.get("years") or edu.get("year") or ""
+            tail = " ".join(x for x in (loc, date_range) if x)
             parts.append(f"{degree} — {school}, {tail}".strip(" —,"))
 
     projects = json_data.get("projects") or []
@@ -402,8 +406,9 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
             pass  # fall through with return_value = None (transient failure)
         elif depth == "full":
             report = {}
-            for key in ["summary", "breakdown", "requirement_mapping", "keyword_coverage_pct",
-                         "matched_keywords", "missing_keywords", "hard_blockers", "ats_tip"]:
+            for key in ["summary", "breakdown", "job_category", "requirement_mapping", "keyword_coverage_pct",
+                         "matched_keywords", "missing_keywords", "experience_gaps",
+                         "potential_concerns", "hard_blockers", "ats_tip"]:
                 if key in result:
                     report[key] = result[key]
             if report:
@@ -484,7 +489,7 @@ async def analyze_unscored_jobs(status: str = "saved"):
     whole run.
     """
     from types import SimpleNamespace
-    from sqlalchemy import or_, text, func
+    from sqlalchemy import String, cast, func, or_, text
     from backend.models.db import Search, Company as CompanyModel
 
     batch_size = 20
@@ -502,6 +507,12 @@ async def analyze_unscored_jobs(status: str = "saved"):
             logger.warning("No CVs uploaded yet, skipping analysis pipeline")
             return
 
+        provider_row = db.query(Setting).filter(Setting.key == "llm_provider").first()
+        provider = (provider_row.value if provider_row and provider_row.value else "").lower()
+        # Ollama on the supported 16 GB Apple-Silicon deployment runs one model
+        # request at a time. Commit each completed score immediately so the Jobs
+        # page shows steady progress and an interruption loses at most one item.
+        batch_size = 1 if provider == "ollama" else 20
         # For "new" jobs, only score those from entities with auto_scoring_depth != 'off'
         auto_score_filter = None
         if status != "saved":
@@ -543,7 +554,10 @@ async def analyze_unscored_jobs(status: str = "saved"):
         db = SessionLocal()
         try:
             q = db.query(Job).filter(
-                (Job.cv_scores == None) | (Job.cv_scores == text("'{}'::jsonb")),
+                # Job.cv_scores is declared as JSON (not JSONB). Comparing it to
+                # a jsonb literal fails on PostgreSQL with `json = jsonb`.
+                # Text casting is portable across PostgreSQL and the SQLite test DB.
+                (Job.cv_scores == None) | (cast(Job.cv_scores, String) == "{}"),
             )
             if status == "saved":
                 q = q.filter(Job.saved == True)

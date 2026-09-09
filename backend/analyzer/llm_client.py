@@ -345,15 +345,23 @@ async def _call_openai(prompt: str, system: str, model: str, api_key: str, max_t
 
 async def _call_ollama(prompt: str, system: str, model: str, max_tokens: int) -> dict:
     """Call local Ollama instance. Returns {text, usage}."""
-    import httpx
-    async with httpx.AsyncClient(timeout=120) as client:
+    import httpx, os
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    # Full resume/JD reports can take several minutes on Apple Silicon. Keep the
+    # timeout configurable and long enough for an 8B local model by default.
+    try:
+        timeout_seconds = max(30, int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "600")))
+    except ValueError:
+        timeout_seconds = 600
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         response = await client.post(
-            "http://localhost:11434/api/generate",
+            f"{base_url}/api/generate",
             json={
                 "model": model,
                 "prompt": prompt,
                 "system": system,
                 "stream": False,
+                "think": False,
                 "options": {"num_predict": max_tokens},
             },
         )

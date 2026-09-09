@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.api.routes_resumes import _get_browser, _rewrite_urls_with_tracers  # shared with resumes
+from backend.api.routes_resumes import _download_filename, _get_browser, _rewrite_urls_with_tracers  # shared with resumes
 
 logger = logging.getLogger("jobnavigator.cover_letters")
 
@@ -280,27 +280,18 @@ async def export_pdf(cl_id: str, db: Session = Depends(get_db)):
         logger.error(f"Cover-letter PDF generation failed: {e}")
         raise HTTPException(500, f"PDF generation failed: {str(e)}")
 
-    # Filename: {Name}_{Type}_CoverLetter_{number}.pdf
-    header_name = (cl.json_data or {}).get("header", {}).get("name", "CoverLetter").replace(" ", "")
-    def _safe(text: str) -> str:
-        """ASCII, no spaces or punctuation that muddles a download filename."""
-        out = "".join(c for c in (text or "") if c.isalnum() or c in " -_").strip()
-        return out.replace(" ", "")
-
-    number = ""
-    label = _safe(cl.name) or "Cover"
+    candidate_name = (cl.json_data or {}).get("header", {}).get("name", "Candidate")
+    job_title = cl.name or "Job"
     if cl.job_id:
         job = db.query(Job).filter(Job.id == cl.job_id).first()
-        if job:
-            if job.short_id:
-                number = f"_{job.short_id}"
-            label = _safe(job.company) or label
-    filename = f"{header_name}_{label}_CoverLetter{number}".encode("ascii", "replace").decode()
+        if job and job.title:
+            job_title = job.title
+    filename = _download_filename(job_title, candidate_name, "Cover_Letter")
 
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

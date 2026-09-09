@@ -178,6 +178,7 @@ class Job(Base):
     seen = Column(Boolean, default=False)
     saved = Column(Boolean, default=False)
     status = Column(String, default="new")  # new | saved | applied | skip
+    posted_at = Column(DateTime(timezone=True), nullable=True)
     discovered_at = Column(DateTime(timezone=True), default=utcnow)
 
     # Computed in SQL without loading the deferred blob columns; .columns[0] reaches

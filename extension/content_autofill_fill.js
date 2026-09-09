@@ -3,6 +3,79 @@
 (function () {
   'use strict';
 
+  // Resume/Cover Letter handoff from ResumeBuilder → the application tab.
+  // Fragments are not sent to the employer's server; remove our keys immediately
+  // after storing them in extension session state for this tab.
+  function captureApplicationHandoff() {
+    const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const jobId = params.get('jn_job'), resumeId = params.get('jn_resume');
+    if (!jobId || !resumeId) return;
+    chrome.runtime.sendMessage({ type: 'application_assets_handoff', jobId, resumeId });
+    params.delete('jn_job'); params.delete('jn_resume');
+    const rest = params.toString();
+    try { history.replaceState(history.state, '', location.pathname + location.search + (rest ? '#' + rest : '')); } catch (_) {}
+  }
+
+  function fileLabel(input) {
+    const parts = [input.name, input.id, input.getAttribute('aria-label')];
+    if (input.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+      if (label) parts.push(label.textContent);
+    }
+    const wrapping = input.closest('label, [data-automation-id*="file" i], [class*="upload" i]');
+    if (wrapping) parts.push(wrapping.textContent);
+    return parts.filter(Boolean).join(' ').toLowerCase();
+  }
+
+  function showAssetToast(message, error) {
+    const old = document.getElementById('__jn_asset_toast'); if (old) old.remove();
+    const toast = document.createElement('div'); toast.id = '__jn_asset_toast';
+    toast.textContent = message;
+    toast.style.cssText = `position:fixed;right:16px;bottom:70px;z-index:2147483647;padding:10px 14px;border-radius:8px;color:white;font:600 13px -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.25);background:${error ? '#b42318' : '#18864b'}`;
+    document.documentElement.appendChild(toast); setTimeout(() => toast.remove(), 5000);
+  }
+
+  function requestAsset(kind) {
+    return new Promise(resolve => chrome.runtime.sendMessage({ type: 'application_asset_fetch', kind }, resolve));
+  }
+
+  const pendingAssetInputs = new WeakSet();
+  async function attachApplicationAssets() {
+    const state = await new Promise(resolve => chrome.runtime.sendMessage({ type: 'application_assets_get' }, resolve));
+    if (!state || !state.assets) return false;
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(x => !x.disabled);
+    if (!inputs.length) return false;
+    let resumeInput = inputs.find(x => /resume|résumé|curriculum|\bcv\b/.test(fileLabel(x))) || inputs[0];
+    let coverInput = inputs.find(x => /cover.?letter|motivation.?letter/.test(fileLabel(x))) || (inputs.length > 1 ? inputs.find(x => x !== resumeInput) : null);
+    let attached = 0;
+    for (const [kind, input] of [['resume', resumeInput], ['cover', coverInput]]) {
+      if (!input || pendingAssetInputs.has(input) || input.dataset.jnAttached === 'true' || (input.files && input.files.length)) continue;
+      pendingAssetInputs.add(input);
+      const result = await requestAsset(kind);
+      pendingAssetInputs.delete(input);
+      if (!result || result.missing) continue;
+      if (result.error) { showAssetToast(`JobNavigator: ${result.error}`, true); continue; }
+      try {
+        const raw = atob(result.base64), bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([bytes], result.filename, { type: 'application/pdf' }));
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dataset.jnAttached = 'true'; attached++;
+      } catch (e) { showAssetToast(`JobNavigator could not attach ${kind}: ${e.message}`, true); }
+    }
+    if (attached) showAssetToast(`JobNavigator attached ${attached} application file${attached > 1 ? 's' : ''}`);
+    return attached > 0;
+  }
+
+  captureApplicationHandoff();
+  attachApplicationAssets();
+  const assetObserver = new MutationObserver(() => attachApplicationAssets());
+  assetObserver.observe(document.documentElement, { childList: true, subtree: true });
+  setTimeout(() => assetObserver.disconnect(), 60 * 60 * 1000);
+
   // Inlined app mark (same asset as the in-field draft). Inlined rather than
   // chrome.runtime.getURL('icons/…') so it renders without a full reinstall to
   // register web_accessible_resources, and inside strict-CSP ATS pages.

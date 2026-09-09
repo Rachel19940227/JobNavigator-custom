@@ -586,6 +586,11 @@ def run_migrations(db):
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ",
         "CREATE INDEX IF NOT EXISTS ix_jobs_best_cv_score ON jobs(best_cv_score)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cache_error TEXT",
+        # v2 cover-letter writing controls exist in the ORM model, but
+        # create_all() cannot add columns to an existing v1 table.
+        "ALTER TABLE cover_letters ADD COLUMN IF NOT EXISTS voice VARCHAR",
+        "ALTER TABLE cover_letters ADD COLUMN IF NOT EXISTS length VARCHAR",
+        "ALTER TABLE cover_letters ADD COLUMN IF NOT EXISTS from_persona BOOLEAN NOT NULL DEFAULT FALSE",
         # cv_scores is declared Column(JSON), so create_all() builds it as native
         # `json` on a fresh DB and as `jsonb` on DBs predating that change. The
         # jsonb_* functions have no `json` overload, so every reference is cast

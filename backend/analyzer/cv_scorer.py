@@ -809,8 +809,14 @@ async def score_single_job(job_id: str, cv_ids: list = None, depth: str = "full"
         if not isinstance(new_scores, dict):
             logger.warning(f"Job {job_id}: rescore result has invalid scores — not persisting")
             return "Malformed LLM response - not persisted"
-        merged = dict(job.cv_scores or {})
-        merged.update(new_scores)
+        # An explicit Rescore selection is authoritative. Keeping unrelated
+        # historical keys here made the Jobs list continue showing an old
+        # higher best score after the user rescored one résumé. A scheduled or
+        # one-click run (no cv_ids) already evaluates the complete set and also
+        # replaces the complete score map in analyze_unscored_jobs.
+        merged = dict(new_scores) if cv_ids else dict(job.cv_scores or {})
+        if not cv_ids:
+            merged.update(new_scores)
         job.cv_scores = merged
         # Precompute max score for fast DB filtering (Task 2)
         try:

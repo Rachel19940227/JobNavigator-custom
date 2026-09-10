@@ -1297,7 +1297,11 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
         _cfg = resolve_llm_config("", db=db)
         _provider, _model = _cfg["provider"], _cfg["model"]
         async with track_llm_call("pdf", _provider, _model) as _tracker:
-            _resp = await call_llm(prompt=user_prompt, system=system_prompt, max_tokens=2000)
+            # Resume PDFs can contain many bullets; 2k output tokens commonly
+            # truncates the JSON mid-string. Give the local parser enough room,
+            # then retry once with a compact prompt if the model still emits
+            # malformed JSON.
+            _resp = await call_llm(prompt=user_prompt, system=system_prompt, max_tokens=5000)
             _tracker.record(_resp)
             raw_response = _resp["text"]
 
@@ -1309,7 +1313,21 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
 
-        return json.loads(cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            repair_prompt = ("Return ONLY one valid compact JSON object matching this schema. "
+                             "Do not use markdown, comments, or trailing text. Preserve facts; "
+                             "use empty arrays/strings for missing fields.\n\n" + schema_example +
+                             "\n\nResume text:\n" + extracted_text[:30000])
+            _resp = await call_llm(prompt=repair_prompt, system=system_prompt, max_tokens=5000)
+            raw_response = _resp["text"]
+            cleaned = raw_response.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned[cleaned.index("\n") + 1:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            return json.loads(cleaned.strip())
     except json.JSONDecodeError as e:
         logger.error(f"LLM returned invalid JSON for PDF import: {e}\nRaw: {raw_response[:500]}")
         raise HTTPException(status_code=422, detail="LLM returned invalid JSON. Try again or enter data manually.")

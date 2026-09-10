@@ -64,7 +64,14 @@ def schema_for(operation: str) -> dict:
                  "breakdown": {"type": "object", "additionalProperties": False,
                                "required": ["skills", "experience", "domain", "role", "requirements"],
                                "properties": {k: {"type": "number", "minimum": 0, "maximum": 20} for k in ["skills", "experience", "domain", "role", "requirements"]}},
-                 "requirement_mapping": {"type": "array", "items": {"type": "object"}},
+                 "requirement_mapping": {"type": "array", "items": {
+                     "type": "object", "additionalProperties": False,
+                     "required": ["requirement", "cv_match", "matched", "severity"],
+                     "properties": {"requirement": {"type": "string"},
+                                    "cv_match": {"type": ["string", "null"]},
+                                    "matched": {"type": "boolean"},
+                                    "severity": {"type": "string", "enum": ["required", "preferred"]}},
+                 }},
                  "keyword_coverage_pct": {"type": "number"}, "matched_keywords": arr,
                  "missing_keywords": arr, "experience_gaps": arr, "potential_concerns": arr,
                  "hard_blockers": arr, "ats_tip": {"type": "string"}}

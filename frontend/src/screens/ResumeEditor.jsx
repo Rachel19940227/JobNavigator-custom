@@ -474,6 +474,14 @@ export default function ResumeEditor() {
     return `${base}/api/resumes/${id}/pdf?template=${encodeURIComponent(template)}&format=${encodeURIComponent(format)}`
   }, [id, template, format])
 
+  const downloadPdf = async () => {
+    try {
+      const r = await api.get(`/resumes/${id}/pdf`, { responseType: 'blob', params: { template, format } })
+      const m = /filename="?([^\"]+)"?/.exec(r.headers['content-disposition'] || '')
+      const url = URL.createObjectURL(r.data); const a = document.createElement('a'); a.href = url; a.download = m ? m[1] : 'Resume.pdf'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) { console.error(e); pushToast({ kind: 'error', msg: 'Could not download the résumé PDF.' }) }
+  }
+
   const jobLinkWithAssets = useMemo(() => {
     if (!jobData?.url || !doc?.job_id || !id) return jobData?.url || ''
     try {
@@ -674,7 +682,7 @@ export default function ResumeEditor() {
             {/* round 9: `Button href` renders the real download anchor, on the
                 primary paint this toolbar drew by hand (--accent / --accent-ink /
                 500). Overrides restore the toolbar's own 29px height and 12px label. */}
-            <Button size="sm" href={pdfDownloadUrl} target="_blank"
+            <Button size="sm" onClick={downloadPdf}
               style={{ marginLeft: 'auto', minWidth: 0, height: 29, gap: 6, fontSize: 12 }}>↓ Download PDF</Button>
           </HeaderRow>
           <Surface radius="none" style={{ flex: 1, minHeight: 0, position: 'relative' }}>

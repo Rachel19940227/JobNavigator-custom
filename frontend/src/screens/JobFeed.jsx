@@ -1178,6 +1178,9 @@ export default function V2JobFeed() {
                 return (
                   <Row key={j.id} data-row={i} divider selected={i === sel} onClick={(e) => rowClick(e, i, j)}
                     style={{ flex: '0 0 auto', height: 'auto', alignItems: 'stretch', gap: 0, padding: 0, backgroundColor: (on || i === sel) ? 'var(--row-selected)' : 'transparent', backgroundImage: (isIgnored && !on && i !== sel) ? 'repeating-linear-gradient(-45deg, transparent 0 8px, var(--row-stripe) 8px 10px)' : 'none', overflow: 'hidden' }}>
+                    <div style={{ flex: '0 0 38px', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 15 }} onClick={(e) => e.stopPropagation()}>
+                      <UICheck checked={on} ariaLabel={`Select ${j.title}`} title="Select job" onChange={() => setChecked((prev) => { const next = new Set(prev); next.has(j.id) ? next.delete(j.id) : next.add(j.id); return next })} />
+                    </div>
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '10px 12px', opacity: isIgnored ? 0.55 : 1 }}>
                       {/* ring */}
                       <div style={{ position: 'relative', width: 44, height: 44, flex: '0 0 44px' }}>

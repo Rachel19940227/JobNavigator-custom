@@ -16,7 +16,7 @@ from pypdf import PdfWriter, PdfReader
 from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.api.routes_resumes import _download_filename, _get_browser, _rewrite_urls_with_tracers  # shared with resumes
+from backend.api.routes_resumes import _download_filename, _get_browser, _rewrite_urls_with_tracers, _render_html as _render_resume_html  # shared with resumes
 
 logger = logging.getLogger("jobnavigator.cover_letters")
 
@@ -312,7 +312,7 @@ async def export_bundle_pdf(cl_id: str, db: Session = Depends(get_db)):
         browser = await _get_browser()
         pages = []
         for html, fmt in [(_render_html(_rewrite_urls_with_tracers(cl.json_data or {}, None, db, cover_letter_id=str(cl.id), job_id=cl.job_id), cl.template, cl.page_format), cl.page_format),
-                          (_render_html(_rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db), resume.template, resume.page_format), resume.page_format)]:
+                          (_render_resume_html(_rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db), resume.template, resume.page_format), resume.page_format)]:
             page = await browser.new_page()
             await page.set_content(html, wait_until="networkidle")
             pages.append(await page.pdf(format="A4" if (fmt or "letter").lower() == "a4" else "Letter", print_background=True, margin={"top":"0","right":"0","bottom":"0","left":"0"}))

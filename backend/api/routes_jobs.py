@@ -235,6 +235,36 @@ async def import_job_url(body: dict, db: Session = Depends(get_db)):
     return {**_job_to_dict(job), "new": True}
 
 
+@router.post("/create-manual")
+async def create_manual_job(body: dict, db: Session = Depends(get_db)):
+    """Create a job from user-supplied details when a career page blocks scraping."""
+    title = str(body.get("title") or "").strip()
+    description = str(body.get("description") or "").strip()
+    company = str(body.get("company") or "Manual entry").strip() or "Manual entry"
+    location = str(body.get("location") or "").strip() or None
+    url = str(body.get("url") or "").strip() or None
+    if not title or not description:
+        raise HTTPException(status_code=400, detail="title and job description are required")
+    if len(title) > 500 or len(description) > 100_000:
+        raise HTTPException(status_code=400, detail="title or job description is too long")
+    external_url = url or f"manual://{secrets.token_urlsafe(18)}"
+    external_id = make_external_id(company, title, external_url)
+    content_hash = make_content_hash(company, title)
+    existing = db.query(Job).filter((Job.external_id == external_id) | (Job.content_hash == content_hash)).first()
+    if existing:
+        if not existing.description or "CAPTCHA" in (existing.description or ""):
+            existing.description = description
+        existing.url = existing.url or url
+        existing.location = existing.location or location
+        db.commit(); db.refresh(existing)
+        return {**_job_to_dict(existing), "new": False}
+    job = Job(external_id=external_id, content_hash=content_hash, company=company,
+              title=title, url=url, source="manual_text", description=description,
+              location=location, remote="remote" in (location or "").lower(), status="new")
+    db.add(job); db.commit(); db.refresh(job)
+    return {**_job_to_dict(job), "new": True}
+
+
 @router.post("/import-linkedin-url")
 async def import_linkedin_url(body: dict, db: Session = Depends(get_db)):
     """Import one public LinkedIn job URL into the normal Job Feed."""

@@ -233,6 +233,11 @@ export default function V2JobFeed() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [addJobOpen, setAddJobOpen] = useState(false)
   const [addJobUrl, setAddJobUrl] = useState('')
+  const [addJobMode, setAddJobMode] = useState('url')
+  const [addJobTitle, setAddJobTitle] = useState('')
+  const [addJobCompany, setAddJobCompany] = useState('')
+  const [addJobLocation, setAddJobLocation] = useState('')
+  const [addJobDescription, setAddJobDescription] = useState('')
   const [addingJob, setAddingJob] = useState(false)
   const [addJobError, setAddJobError] = useState('')
   const [rescoreJob, setRescoreJob] = useState(null)
@@ -367,10 +372,13 @@ export default function V2JobFeed() {
 
   const addJobFromUrl = useCallback(async () => {
     const url = addJobUrl.trim()
-    if (!url || addingJob) return
+    if (addingJob) return
+    if (addJobMode === 'url' && !url) return
+    if (addJobMode === 'text' && (!addJobTitle.trim() || !addJobDescription.trim())) return
     setAddingJob(true); setAddJobError('')
     try {
-      const { data: job } = await api.post('/jobs/import-url', { url })
+      const payload = addJobMode === 'url' ? { url } : { title: addJobTitle.trim(), company: addJobCompany.trim(), location: addJobLocation.trim(), description: addJobDescription.trim(), url }
+      const { data: job } = await api.post(addJobMode === 'url' ? '/jobs/import-url' : '/jobs/create-manual', payload)
       setAddJobOpen(false); setAddJobUrl('')
       setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)])
       if (job.new) setTotal((n) => n + 1)
@@ -380,7 +388,7 @@ export default function V2JobFeed() {
     } catch (e) {
       setAddJobError(e.response?.data?.detail || e.message || 'Could not import this job')
     } finally { setAddingJob(false) }
-  }, [addJobUrl, addingJob, pushToast, refreshStats])
+  }, [addJobUrl, addJobMode, addJobTitle, addJobCompany, addJobLocation, addJobDescription, addingJob, pushToast, refreshStats])
 
   // append next page (infinite scroll + refill after triage drains the list)
   const loadingMoreRef = useRef(false)
@@ -1758,21 +1766,22 @@ export default function V2JobFeed() {
       )}
 
       {addJobOpen && (
-        <ModalPanel width={520} title="Add job from URL" onClose={() => !addingJob && setAddJobOpen(false)} zIndex={70}>
+        <ModalPanel width={520} title="Add job" onClose={() => !addingJob && setAddJobOpen(false)} zIndex={70}>
           <HeaderRow align="stretch" pad="20px 24px 14px" style={{ flexDirection: 'column', gap: 5 }}>
             <Label>Add job</Label>
-            <Heading size={19} className="v2-dialogtitle">Paste a public job link</Heading>
-            <Helper>LinkedIn and public employer pages are stored locally with their job description.</Helper>
+            <Heading size={19} className="v2-dialogtitle">Add a job manually</Heading>
+            <Helper>Paste a link, or enter details when the employer page blocks scraping.</Helper>
           </HeaderRow>
           <div style={{ padding: '18px 24px' }}>
-            <Input autoFocus type="url" value={addJobUrl} onChange={setAddJobUrl}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}><Button size="sm" variant={addJobMode === 'url' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('url')}>Job link</Button><Button size="sm" variant={addJobMode === 'text' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('text')}>Job details text</Button></div>
+            {addJobMode === 'url' ? <Input autoFocus type="url" value={addJobUrl} onChange={setAddJobUrl}
               placeholder="https://company.example/jobs/123" ariaLabel="Job URL" invalid={!!addJobError}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addJobFromUrl() } }} />
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addJobFromUrl() } }} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}><Input autoFocus value={addJobTitle} onChange={setAddJobTitle} placeholder="Job title" ariaLabel="Job title" /><Input value={addJobCompany} onChange={setAddJobCompany} placeholder="Company (optional)" ariaLabel="Company" /><Input value={addJobLocation} onChange={setAddJobLocation} placeholder="Location (optional)" ariaLabel="Location" /><Input value={addJobUrl} onChange={setAddJobUrl} placeholder="Original job URL (optional)" ariaLabel="Original job URL" /><textarea value={addJobDescription} onChange={(e) => setAddJobDescription(e.target.value)} placeholder="Paste the full job description, requirements, responsibilities and skills" aria-label="Job description" rows={9} style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '9px 11px', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-field)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit' }} /></div>}
             {addJobError && <Helper style={{ color: 'var(--bad)', marginTop: 7 }}>{addJobError}</Helper>}
           </div>
           <FooterRow variant="wide">
             <Button variant="secondary" size="sm" onClick={() => setAddJobOpen(false)} disabled={addingJob} style={{ marginLeft: 'auto' }}>Cancel</Button>
-            <Button size="sm" onClick={addJobFromUrl} disabled={addingJob || !addJobUrl.trim()}>{addingJob ? <><Spinner size={11} color="currentColor" /> Adding…</> : 'Add job'}</Button>
+            <Button size="sm" onClick={addJobFromUrl} disabled={addingJob || (addJobMode === 'url' ? !addJobUrl.trim() : (!addJobTitle.trim() || !addJobDescription.trim()))}>{addingJob ? <><Spinner size={11} color="currentColor" /> Adding…</> : 'Add job'}</Button>
           </FooterRow>
         </ModalPanel>
       )}

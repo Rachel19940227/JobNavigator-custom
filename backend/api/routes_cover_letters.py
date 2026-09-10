@@ -318,8 +318,11 @@ async def export_bundle_pdf(cl_id: str, db: Session = Depends(get_db)):
             pages.append(await page.pdf(format="A4" if (fmt or "letter").lower() == "a4" else "Letter", print_background=True, margin={"top":"0","right":"0","bottom":"0","left":"0"}))
             await page.close()
         writer = PdfWriter()
+        # append() preserves each source PDF's page/resource tree more reliably
+        # than adding PageObjects one by one (which can yield blank pages in
+        # browser viewers when fonts/images are indirect objects).
         for raw in pages:
-            for p in PdfReader(io.BytesIO(raw)).pages: writer.add_page(p)
+            writer.append(io.BytesIO(raw))
         out = io.BytesIO(); writer.write(out)
     except Exception as e:
         logger.error(f"Bundle PDF generation failed: {e}")

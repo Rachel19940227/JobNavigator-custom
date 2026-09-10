@@ -189,6 +189,13 @@ export default function CoverLetterEditor() {
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (e) { console.error(e); pushToast({ kind: 'error', msg: 'Could not download the PDF.' }) }   // a download failure is not a save failure
   }
+  const downloadBundle = async () => {
+    try {
+      const r = await api.get(`/cover-letters/${id}/bundle-pdf`, { responseType: 'blob' })
+      const m = /filename="?([^\"]+)"?/.exec(r.headers['content-disposition'] || '')
+      const url = URL.createObjectURL(r.data); const a = document.createElement('a'); a.href = url; a.download = m ? m[1] : 'Cover_Letter_Resume.pdf'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) { console.error(e); pushToast({ kind: 'error', msg: 'Could not download the combined PDF. Make sure this letter has a source resume.' }) }
+  }
 
   const remove = () => {
     setMenuOpen(false)
@@ -541,7 +548,8 @@ export default function CoverLetterEditor() {
                 no previous version and the pane below reads "Rendering the preview…"
                 while this line claimed one was showing (R4-T2B-08). */}
             {pdfErr && <span style={{ fontSize: 11, lineHeight: '14px', color: 'var(--bad)', whiteSpace: 'nowrap' }}>{pdfUrl ? 'Preview failed. Showing the previous version' : 'Preview failed — the PDF could not be rendered.'} · <span onClick={() => setPdfNonce((n) => n + 1)} style={{ cursor: 'pointer', borderBottom: '1px dotted currentColor' }}>Retry</span></span>}
-            <Button size="xs" onClick={download} style={{ marginLeft: 'auto' }}>↓ Download PDF</Button>
+            <Button size="xs" onClick={download} style={{ marginLeft: 'auto' }}>↓ Download letter</Button>
+            <Button variant="secondary" size="xs" onClick={downloadBundle}>↓ Letter + résumé</Button>
           </HeaderRow>
           <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
             {pdfUrl

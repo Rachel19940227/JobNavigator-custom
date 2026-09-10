@@ -2,6 +2,7 @@
 import json
 import logging
 import uuid as _uuid
+import io
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from pypdf import PdfWriter, PdfReader
 
 from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
 from backend.api._input import str_field, uuid_filter
@@ -293,6 +295,40 @@ async def export_pdf(cl_id: str, db: Session = Depends(get_db)):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{cl_id}/bundle-pdf")
+async def export_bundle_pdf(cl_id: str, db: Session = Depends(get_db)):
+    """Download the cover letter followed by its source resume as one PDF."""
+    cl = db.query(CoverLetter).filter(CoverLetter.id == cl_id).first()
+    if not cl:
+        raise HTTPException(404, "Cover letter not found")
+    if not cl.resume_id:
+        raise HTTPException(422, "This cover letter has no source resume")
+    resume = db.query(Resume).filter(Resume.id == cl.resume_id).first()
+    if not resume:
+        raise HTTPException(422, "The source resume no longer exists")
+    try:
+        browser = await _get_browser()
+        pages = []
+        for html, fmt in [(_render_html(_rewrite_urls_with_tracers(cl.json_data or {}, None, db, cover_letter_id=str(cl.id), job_id=cl.job_id), cl.template, cl.page_format), cl.page_format),
+                          (_render_html(_rewrite_urls_with_tracers(resume.json_data or {}, str(resume.id), db), resume.template, resume.page_format), resume.page_format)]:
+            page = await browser.new_page()
+            await page.set_content(html, wait_until="networkidle")
+            pages.append(await page.pdf(format="A4" if (fmt or "letter").lower() == "a4" else "Letter", print_background=True, margin={"top":"0","right":"0","bottom":"0","left":"0"}))
+            await page.close()
+        writer = PdfWriter()
+        for raw in pages:
+            for p in PdfReader(io.BytesIO(raw)).pages: writer.add_page(p)
+        out = io.BytesIO(); writer.write(out)
+    except Exception as e:
+        logger.error(f"Bundle PDF generation failed: {e}")
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
+    job = db.query(Job).filter(Job.id == cl.job_id).first() if cl.job_id else None
+    title = job.title if job and job.title else cl.name or "Job"
+    candidate = (cl.json_data or {}).get("header", {}).get("name", "Candidate")
+    filename = _download_filename(title, candidate, "Cover_Letter_Resume")
+    return Response(content=out.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ── AI generation ─────────────────────────────────────────────────────────────

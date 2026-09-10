@@ -310,6 +310,7 @@ function AddModal({ onClose, onCreated }) {
   // action is actually running.
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState('')
+  const [uploaded, setUploaded] = useState(false)
   const fileRef = useRef(null)
 
   const createScratch = async () => {
@@ -329,10 +330,16 @@ function AddModal({ onClose, onCreated }) {
       if (parsed?.id) {
         const wanted = name.trim()
         if (wanted && wanted !== parsed.name) { try { await api.patch(`/resumes/${parsed.id}`, { name: wanted }) } catch { /* keep the imported name */ } }
-        onCreated(parsed.id); return
+        // The import endpoint persists the résumé before returning. Clear the
+        // busy state before handing control back to the parent so a follow-up
+        // navigation error can never leave this dialog stuck on “Parsing…”.
+        setBusy(''); setUploaded(true)
+        try { onCreated(parsed.id) } catch (navigationError) { console.error('resume import navigation', navigationError) }
+        return
       }
       const { data } = await api.post('/resumes', { name: name.trim() || file.name.replace(/\.pdf$/i, ''), is_base: true, json_data: parsed.json_data || parsed })
-      onCreated(data.id)
+      setBusy(''); setUploaded(true)
+      try { onCreated(data.id) } catch (navigationError) { console.error('resume import navigation', navigationError) }
     } catch (e) { setErr(e.response?.data?.detail || 'Import failed. The PDF must contain selectable text, not a scanned image.'); setBusy('') }
   }
 
@@ -348,6 +355,7 @@ function AddModal({ onClose, onCreated }) {
           ariaLabel="Résumé name" onKeyDown={(e) => e.key === 'Enter' && createScratch()}
           style={{ marginBottom: 14 }} />
         {err && <div style={{ fontSize: 12, color: 'var(--bad)', marginBottom: 10 }}>{err}</div>}
+        {uploaded && !err && <div style={{ fontSize: 12, color: 'var(--good, #18864b)', marginBottom: 10 }}>Résumé uploaded successfully.</div>}
         {/* Round 9 #12d · a classic dialog footer, which is also the shape every
             other modal in the app already uses (`ChoiceModal`): one right-aligned
             row of real buttons, the affirmative first, Cancel last. It replaces
@@ -357,7 +365,7 @@ function AddModal({ onClose, onCreated }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           {/* Disabled primary button is --line on --muted — --edge as a fill would read as a second live button. */}
           <Button size="sm" onClick={createScratch} disabled={!canCreate} style={{ marginLeft: 'auto' }}>{busy === 'create' ? 'Creating…' : 'Create from scratch'}</Button>
-          <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()} disabled={!!busy}>{busy === 'import' ? 'Parsing…' : 'Import PDF…'}</Button>
+          <Button variant="secondary" size="sm" onClick={() => fileRef.current?.click()} disabled={!!busy}>{busy === 'import' ? 'Uploading…' : uploaded ? 'Upload another PDF…' : 'Import PDF…'}</Button>
           <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
           {/* Clear the file input after every pick — re-picking the same file otherwise fires no change event. */}
           {/* ui: keep — hidden <input type="file">, not a rendered field */}

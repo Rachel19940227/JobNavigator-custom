@@ -958,13 +958,20 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
 
         prompt = prompt_template.replace("{resume_json}", _json.dumps(resume_sections, indent=2))
         prompt = prompt.replace("{job_description}", jd_text[:6000])
+        prompt = (
+            "MANDATORY PRESERVATION POLICY:\n"
+            "- Preserve every truthful resume skill, tool, domain, responsibility, achievement, and keyword that is relevant to the job.\n"
+            "- Do not delete relevant evidence merely to shorten or specialize the resume; retain it in the appropriate section and reorder it toward the JD.\n"
+            "- Never fabricate employment, platforms, certifications, dates, metrics, or responsibilities. Suggested bullets must remain clearly marked as suggestions for user verification and must not be presented as existing experience.\n\n"
+            + prompt
+        )
 
         system = (
             "You are an expert resume tailor. Rewrite the resume to align with the "
             "job description using the JD's exact vocabulary. Do NOT invent experience, "
             "skills, or facts not present in the original resume. Only reformulate, "
             "reframe, and reorder existing content. If something is missing, map to "
-            "the closest truthful concept."
+            "the closest truthful concept. Preserve all relevant truthful keywords and evidence from the source resume; omission of relevant evidence is not allowed. Never turn speculative suggestions into main resume facts."
         )
 
         from backend.analyzer.llm_client import call_cv_tailor_llm

@@ -40,7 +40,16 @@
   }
 
   const pendingAssetInputs = new WeakSet();
+  // Some ATS pages replace the file input after dispatching `change`, which
+  // triggers the mutation observer again. Guard the whole async operation and
+  // remember each successfully attached asset so a replacement input cannot
+  // start an upload loop.
+  let assetAttachInFlight = false;
+  const attachedAssetKinds = new Set();
   async function attachApplicationAssets() {
+    if (assetAttachInFlight) return false;
+    assetAttachInFlight = true;
+    try {
     const state = await new Promise(resolve => chrome.runtime.sendMessage({ type: 'application_assets_get' }, resolve));
     if (!state || !state.assets) return false;
     const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(x => !x.disabled);
@@ -49,7 +58,7 @@
     let coverInput = inputs.find(x => /cover.?letter|motivation.?letter/.test(fileLabel(x))) || (inputs.length > 1 ? inputs.find(x => x !== resumeInput) : null);
     let attached = 0;
     for (const [kind, input] of [['resume', resumeInput], ['cover', coverInput]]) {
-      if (!input || pendingAssetInputs.has(input) || input.dataset.jnAttached === 'true' || (input.files && input.files.length)) continue;
+      if (!input || attachedAssetKinds.has(kind) || pendingAssetInputs.has(input) || input.dataset.jnAttached === 'true' || (input.files && input.files.length)) continue;
       pendingAssetInputs.add(input);
       const result = await requestAsset(kind);
       pendingAssetInputs.delete(input);
@@ -64,10 +73,14 @@
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
         input.dataset.jnAttached = 'true'; attached++;
+        attachedAssetKinds.add(kind);
       } catch (e) { showAssetToast(`JobNavigator could not attach ${kind}: ${e.message}`, true); }
     }
     if (attached) showAssetToast(`JobNavigator attached ${attached} application file${attached > 1 ? 's' : ''}`);
     return attached > 0;
+    } finally {
+      assetAttachInFlight = false;
+    }
   }
 
   captureApplicationHandoff();

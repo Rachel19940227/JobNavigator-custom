@@ -51,7 +51,7 @@ DEFAULT_SETTINGS = {
     "llm_fallback_model": ("", "Fallback model name"),
     "llm_fallback_api_key": ("", "API key for fallback provider (OpenAI)"),
     "scoring_llm_provider": ("codex_cli", "Resume scoring provider override (automatic batch=Terra; manual score/rescore=Sol)"),
-    "scoring_llm_model": ("gpt-5.6-terra", "Resume scoring default model for automatic batches"),
+    "scoring_llm_model": ("gpt-5.6-sol", "Resume scoring default model for automatic batches"),
     "scoring_llm_api_key": ("", "API key for the scoring provider override"),
     "codex_fallback_enabled": ("true", "Use local Ollama qwen3:8b only when Codex CLI cannot produce a valid result"),
     "codex_fallback_provider": ("ollama", "Fixed safe fallback provider for Codex CLI"),

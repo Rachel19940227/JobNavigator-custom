@@ -440,7 +440,10 @@ def list_jobs(
     if title_search:
         q = q.filter(Job.title.ilike(f"%{title_search}%"))
     if min_salary is not None:
-        q = q.filter(Job.salary_max >= min_salary)
+        # A lower bound rejects only known salaries below the threshold;
+        # postings with no salary data remain discoverable.
+        q = q.filter(or_(Job.salary_max >= min_salary,
+                         and_(Job.salary_min.is_(None), Job.salary_max.is_(None))))
     if max_salary is not None:
         q = q.filter(Job.salary_min <= max_salary)
     clause = _location_clause(location)
@@ -614,7 +617,8 @@ def _apply_common_filters(q, status=None, company=None, source=None, h1b_verdict
     if remote is not None:
         q = q.filter(Job.remote == remote)
     if min_salary is not None:
-        q = q.filter(Job.salary_max >= min_salary)
+        q = q.filter(or_(Job.salary_max >= min_salary,
+                         and_(Job.salary_min.is_(None), Job.salary_max.is_(None))))
     if max_salary is not None:
         q = q.filter(Job.salary_min <= max_salary)
     if search_id:

@@ -7,7 +7,7 @@ import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../ho
 import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow } from '../ui'
 import { ANALYZE, SCORE_RESUME, TAILOR, activityText, feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
 
-const FILTERS_KEY = 'v2_feed_filters'
+const FILTERS_KEY = 'v2_feed_filters_v3'
 const SORT_KEY = 'v2_feed_sort'
 const UI_KEY = 'v2_feed_ui'   // persisted panel open/collapse prefs
 const loadUI = () => { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {} } catch { return {} } }
@@ -84,7 +84,7 @@ const SOURCE_LABELS = {
 const srcLabel = (s) => SOURCE_LABELS[s] || s || ''
 const STATUS_OPTS = [['new', 'New'], ['saved', 'Saved'], ['applied', 'Applied'], ['skip', 'Skip'], ['ignored', 'Ignored']]
 const SORT_OPTS = [['score', 'Top score'], ['date', 'Newest first'], ['salary', 'Salary, high to low'], ['company', 'Company A–Z']]
-const DEFAULTS = { status: [], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '', max_salary: '' }
+const DEFAULTS = { status: [], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '60', max_salary: '' }
 
 // small dropdown shell (trigger pill + panel + backdrop). Flips to right-align
 // when the panel would overflow the viewport's right edge.
@@ -1116,7 +1116,7 @@ export default function V2JobFeed() {
             <Input type="number" mono placeholder="$K" value={numDraft.max_salary} onChange={(v) => setNum('max_salary', v)}
               ariaLabel="Maximum salary in thousands" style={{ flex: 1, minWidth: 0 }} />
           </div>
-          <Helper size="xs" style={{ marginTop: 8 }}>Also hides jobs without a listed salary</Helper>
+          <Helper size="xs" style={{ marginTop: 8 }}>Jobs without salary information are kept</Helper>
         </Drop>
         <Drop width={170} active open={menu === 'status'} onToggle={() => setMenu(menu === 'status' ? null : 'status')}
           trigger={(t) => {

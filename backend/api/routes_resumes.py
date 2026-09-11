@@ -962,7 +962,8 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             "MANDATORY PRESERVATION POLICY:\n"
             "- Preserve every truthful resume skill, tool, domain, responsibility, achievement, and keyword that is relevant to the job.\n"
             "- Do not delete relevant evidence merely to shorten or specialize the resume; retain it in the appropriate section and reorder it toward the JD.\n"
-            "- Never fabricate employment, platforms, certifications, dates, metrics, or responsibilities. Suggested bullets must remain clearly marked as suggestions for user verification and must not be presented as existing experience.\n\n"
+            "- Never fabricate employment, platforms, certifications, dates, metrics, or responsibilities.\n"
+            "- Do not put meta labels or disclaimers such as 'Suggestion for verification only' or 'Needs verification' anywhere in returned resume fields.\n\n"
             + prompt
         )
 
@@ -993,6 +994,19 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             if match:
                 text = match.group(0)
             llm_result = _json.loads(text)
+            # Meta-review labels belong only in the tailoring review UI, never
+            # in the exported résumé content. Remove common model-generated
+            # disclaimers defensively while preserving the underlying bullet.
+            def _strip_review_label(value):
+                if isinstance(value, str):
+                    value = _re.sub(r'(?i)\bSuggestion\s+for\s+verification\s+only\s*:?\s*', '', value)
+                    value = _re.sub(r'(?i)\bNeeds\s+verification\s*:?\s*', '', value)
+                elif isinstance(value, list):
+                    value = [_strip_review_label(v) for v in value]
+                elif isinstance(value, dict):
+                    value = {k: _strip_review_label(v) for k, v in value.items()}
+                return value
+            llm_result = _strip_review_label(llm_result)
         except _json.JSONDecodeError as e:
             logger.error(f"Tailor JSON parse failed: {e}. Raw: {raw[:500]}")
             raise

@@ -57,7 +57,7 @@ DEFAULT_SETTINGS = {
     "codex_fallback_provider": ("ollama", "Fixed safe fallback provider for Codex CLI"),
     "codex_fallback_model": ("qwen3:8b", "Fixed safe fallback model for Codex CLI"),
     "codex_timeout_seconds": ("600", "Host Codex CLI subprocess timeout"),
-    "codex_max_concurrency": ("1", "Maximum concurrent host Codex CLI processes"),
+    "codex_max_concurrency": ("3", "Maximum concurrent host Codex CLI processes"),
     "llm_models_list": (json.dumps([
         {"provider": "claude_api", "model": "claude-sonnet-5"},
         {"provider": "claude_api", "model": "claude-sonnet-4-6"},
@@ -111,7 +111,7 @@ DEFAULT_SETTINGS = {
         {"provider": "openrouter", "model": "x-ai/grok-4.6"},
         {"provider": "openrouter", "model": "mistralai/mistral-large-2512"},
     ]), "Known LLM models per provider (JSON array, user can add custom entries)"),
-    "scoring_max_concurrent": ("1", "Max parallel scoring jobs (others queue until a slot opens)"),
+    "scoring_max_concurrent": ("3", "Max parallel scoring jobs (others queue until a slot opens)"),
     "tailoring_max_concurrent": ("2", "Max concurrent resume-tailoring LLM calls"),
     "tailor_auto_quick_score": ("light", "After tailoring finishes, auto-launch a score chain. Values: 'off' | 'light' | 'full'. Default 'light'. Legacy 'true'='light', 'false'='off'."),
     "prompt_caching_enabled": ("true", "Use Anthropic prompt caching on resume scoring (claude_api only; ~50% cheaper input tokens on same-batch calls). Set false to disable as a rollback lever."),

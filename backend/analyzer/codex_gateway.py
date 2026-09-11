@@ -103,7 +103,7 @@ def _runtime_settings() -> tuple[int, int]:
         rows = {r.key: r.value for r in db.query(Setting).filter(
             Setting.key.in_(["codex_timeout_seconds", "codex_max_concurrency"])).all()}
         return max(30, min(1800, int(rows.get("codex_timeout_seconds", "600")))), \
-            max(1, min(2, int(rows.get("codex_max_concurrency", "1"))))
+            max(1, min(3, int(rows.get("codex_max_concurrency", "3"))))
     finally:
         db.close()
 

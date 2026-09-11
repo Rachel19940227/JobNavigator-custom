@@ -218,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     p = argparse.ArgumentParser(); p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=8765)
     args = p.parse_args(); server = ThreadingHTTPServer((args.host, args.port), Handler)
-    server.shared_token = token(); server.slots = threading.BoundedSemaphore(max(1, min(2, int(os.getenv("CODEX_MAX_CONCURRENCY", "2")))))
+    server.shared_token = token(); server.slots = threading.BoundedSemaphore(max(1, min(3, int(os.getenv("CODEX_MAX_CONCURRENCY", "3")))))
     print(f"Codex Runner listening on {args.host}:{args.port}", flush=True); server.serve_forever()
 
 

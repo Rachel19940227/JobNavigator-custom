@@ -1430,12 +1430,13 @@ async def _score_resume_impl(resume_id: str, depth: str):
             logger.error(f"Score: job {job_ref.id} has no text to score against")
             return "No job text to score"
         result = await score_job_sync(job_ref, cv_texts, db=None, depth=depth,
-                                      preloaded_text=job_text)
+                                      preloaded_text=job_text, model_override="gpt-5.6-sol")
     else:
         # score_job_sync only reads `job` for its id (logging / LLM-cost rows)
         # once the JD text is supplied, so a stand-in is enough here.
         stand_in = SimpleNamespace(id=None, company=None, title=None, description=jd_text)
-        result = await score_job_sync(stand_in, cv_texts, db=None, depth=depth, preloaded_text=jd_text)
+        result = await score_job_sync(stand_in, cv_texts, db=None, depth=depth,
+                                      preloaded_text=jd_text, model_override="gpt-5.6-sol")
     if not result:
         logger.error(f"Score: scoring failed for resume {resume_id}")
         return "Scoring failed"

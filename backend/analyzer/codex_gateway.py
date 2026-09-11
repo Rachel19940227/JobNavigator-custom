@@ -139,7 +139,8 @@ def _token() -> str:
         raise CodexProviderError(CODEX_PROCESS_FAILED, "runner token is unavailable") from exc
 
 
-async def call_runner(operation: str, prompt: str, system: str, max_tokens: int) -> dict:
+async def call_runner(operation: str, prompt: str, system: str, max_tokens: int,
+                      model: str | None = None) -> dict:
     url = os.getenv("CODEX_RUNNER_URL", "http://host.docker.internal:8765").rstrip("/")
     started = time.monotonic()
     process_timeout, concurrency = _runtime_settings()
@@ -150,6 +151,7 @@ async def call_runner(operation: str, prompt: str, system: str, max_tokens: int)
                 response = await client.post(
                     f"{url}/v1/run", headers={"Authorization": f"Bearer {_token()}"},
                     json={"operation": operation, "prompt": prompt, "system": system,
+                          "model": model or "subscription-default",
                           "max_tokens": max_tokens, "timeout_seconds": process_timeout},
                 )
     except asyncio.CancelledError:

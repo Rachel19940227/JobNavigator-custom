@@ -300,14 +300,16 @@ async def _get_job_text(job: Job, db=None) -> str | None:
     return text
 
 
-async def score_job_sync(job: Job, cv_texts: dict, db=None, depth="light", preloaded_text: str = None) -> dict:
+async def score_job_sync(job: Job, cv_texts: dict, db=None, depth="light", preloaded_text: str = None,
+                         model_override: str | None = None) -> dict:
     """Score a job against all provided CV versions under the global scoring semaphore; depth='full' includes a detailed report."""
     sem = _get_scoring_semaphore()
     async with sem:
-        return await _score_job_inner(job, cv_texts, db, depth, preloaded_text)
+        return await _score_job_inner(job, cv_texts, db, depth, preloaded_text, model_override)
 
 
-async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", preloaded_text: str = None) -> dict:
+async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", preloaded_text: str = None,
+                           model_override: str | None = None) -> dict:
     """Inner scoring logic (called under the semaphore); returns a dict on success, or None for either an intentional skip (no text/CVs — callers must pre-check before calling) or a transient LLM failure that should be retried next pass."""
     job_text = preloaded_text or await _get_job_text(job, db)
     if not job_text:
@@ -331,7 +333,7 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
         from backend.analyzer.llm_client import resolve_llm_config
         _cfg = resolve_llm_config("scoring", db=settings_db)
         provider_for_log = _cfg["provider"]
-        model_for_log = _cfg["model"]
+        model_for_log = model_override or _cfg["model"]
         scoring_api_key = _cfg["api_key"]
         cache_row = settings_db.query(Setting).filter(Setting.key == "prompt_caching_enabled").first()
         caching_enabled = (cache_row.value if cache_row else "true").strip().lower() == "true"
@@ -793,7 +795,10 @@ async def score_single_job(job_id: str, cv_ids: list = None, depth: str = "full"
         return "No job text to score"
 
     # ── Phase 2: LLM scoring (no DB connection held) ──
-    result = await score_job_sync(job_ref, cv_texts, db=None, depth=depth, preloaded_text=job_text)
+    # Explicit user-triggered score/rescore uses the higher-accuracy Sol model;
+    # scheduled/batch scoring keeps the configured Terra default.
+    result = await score_job_sync(job_ref, cv_texts, db=None, depth=depth,
+                                  preloaded_text=job_text, model_override="gpt-5.6-sol")
     if not result:
         return "Scoring failed"
 

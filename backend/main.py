@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.models.db import create_tables, SessionLocal, Setting, JobRun
 from backend.seed import run_seeds
 from backend.config import INITIAL_API_KEY, TELEGRAM_BOT_TOKEN
-from backend.job_monitor import launch_background, JobAlreadyRunningError, get_all_running, is_running, _get_running_by_job_type, cleanup_stale_runs
+from backend.job_monitor import launch_background, JobAlreadyRunningError, get_all_running, is_running, _get_running_by_job_type, cleanup_stale_runs, sanitize_run_error
 
 from backend.api.routes_settings import router as settings_router
 from backend.api.routes_jobs import router as jobs_router
@@ -682,7 +682,7 @@ async def trigger_auto_reject():
 
 @app.post("/api/jobs/backfill-descriptions", tags=["triggers"], summary="Fetch descriptions for jobs missing them", status_code=202)
 async def trigger_backfill_descriptions():
-    """Fetch job descriptions for saved/new jobs that have a URL but no description."""
+    """Fetch job descriptions for new/saved/applied jobs that have a URL but no description."""
     async def _do():
         from backend.models.db import Job
         from backend.scraper.ats._descriptions import _fetch_job_description
@@ -690,7 +690,9 @@ async def trigger_backfill_descriptions():
         db = SessionLocal()
         try:
             jobs = db.query(Job).filter(
-                Job.status.in_(["new", "saved"]),
+                # "applied" is in the set because a hand-logged job (Log application)
+                # lands there directly and needs the same repair.
+                Job.status.in_(["new", "saved", "applied"]),
                 Job.url != None,
                 (Job.description == None) | (Job.description == ""),
             ).order_by(Job.discovered_at.desc()).limit(50).all()
@@ -704,6 +706,8 @@ async def trigger_backfill_descriptions():
                     if desc and len(desc) > 50:
                         job.description = desc
                         apply_salary_to_job(job)
+                        from backend.analyzer.work_arrangement import apply_arrangement_to_job
+                        apply_arrangement_to_job(job)
                         count += 1
                         db.commit()
                         logger.info(f"Backfilled description for '{job.title}' ({len(desc)} chars)")
@@ -1153,7 +1157,7 @@ def get_run_history(limit: Annotated[int, Query(ge=0, le=1000)] = 30, offset: in
                 "finished_at": r.finished_at.isoformat() if r.finished_at else None,
                 "duration_seconds": r.duration_seconds,
                 "result_summary": r.result_summary,
-                "error": r.error,
+                "error": sanitize_run_error(r.error),
                 "meta": r.meta,
             }
             for r in runs
@@ -1179,7 +1183,7 @@ def get_run_detail(run_id: str):
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
             "duration_seconds": r.duration_seconds,
             "result_summary": r.result_summary,
-            "error": r.error,
+            "error": sanitize_run_error(r.error),
             "meta": r.meta,
         }
     finally:

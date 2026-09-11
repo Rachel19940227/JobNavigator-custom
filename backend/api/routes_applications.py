@@ -35,6 +35,7 @@ class ApplicationCreate(BaseModel):
     notes: Optional[str] = None
     status: Optional[str] = None          # applied|interview|offer (Log-application modal)
     applied_at: Optional[str] = None      # ISO date/datetime for back-dated entries
+    location: Optional[str] = None        # optional; the feed's territorial filter reads it
 
 
 class InterviewCreate(BaseModel):
@@ -243,6 +244,35 @@ async def _cache_job_page(job_id: str, url: str):
         _set_job_cache_error(job_id, msg)
 
 
+async def _fetch_and_store_description(job_id: str, url: str) -> None:
+    """Write the ATS-quality JD onto a job that has none. `_resolve_tailoring_jd`
+    owns the fetch, the SSRF gate and the write, so this adds no second cascade."""
+    from types import SimpleNamespace
+    from backend.api.routes_resumes import _resolve_tailoring_jd
+    try:
+        await _resolve_tailoring_jd(
+            SimpleNamespace(id=job_id, description="", url=url, cached_page_text="")
+        )
+    except Exception as e:
+        logger.warning(f"Could not fetch a description for job {job_id}: {e}")
+        return
+
+    # The description is the only arrangement signal a hand-added job has, and it
+    # arrives here rather than at insert time.
+    from backend.analyzer.work_arrangement import apply_arrangement_to_job
+    from backend.models.db import Job, SessionLocal
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            apply_arrangement_to_job(job)
+            db.commit()
+    except Exception as e:
+        logger.warning(f"Could not read the arrangement for job {job_id}: {e}")
+    finally:
+        db.close()
+
+
 @router.post("")
 def create_application(
     data: ApplicationCreate,
@@ -263,8 +293,17 @@ def create_application(
             url=data.url,
             source="manual",   # APPS-15: hand-logged via the Log modal / extension, not a scrape
             status="applied",
+            location=data.location or None,
             seen=True,
         )
+        # A hand-logged job has to answer the feed's Location and Work filters
+        # like any other. There is no description yet, so only the title and a
+        # typed-in location say anything; the background fetch below covers the
+        # rest once the JD lands.
+        from backend.analyzer.location import apply_location_to_job
+        from backend.analyzer.work_arrangement import apply_arrangement_to_job
+        apply_arrangement_to_job(job)
+        apply_location_to_job(job)
         db.add(job)
         db.flush()
     else:
@@ -327,6 +366,12 @@ def create_application(
 
     if data.url and not job.has_cached_page:
         background_tasks.add_task(_cache_job_page, str(job.id), data.url)
+
+    # A hand-logged job arrives with no description, which every LLM step needs.
+    # Fetch it once here instead of on first use, so the first score, tailor or
+    # cover letter does not pay for it.
+    if data.url and not (job.description or "").strip():
+        background_tasks.add_task(_fetch_and_store_description, str(job.id), data.url)
 
     return {
         "id": str(app.id),

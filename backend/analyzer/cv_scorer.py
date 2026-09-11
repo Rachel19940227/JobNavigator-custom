@@ -486,6 +486,18 @@ def _find_company_for_job(db, job: Job):
     return find_company_by_name(db, job.company)
 
 
+def unscored_filter():
+    """SQL predicate for "this job carries no scores yet".
+
+    Job.cv_scores is Column(JSON), which Postgres builds as native `json`,
+    and Postgres has no `json = jsonb` operator. Compare the rendered text
+    instead -- the same predicate /api/jobs/feed-stats uses. A `'{}'::jsonb`
+    literal here raises UndefinedFunction and fails the whole scoring pass.
+    """
+    from sqlalchemy import cast, Text
+    return (Job.cv_scores == None) | (cast(Job.cv_scores, Text) == "{}")
+
+
 async def analyze_unscored_jobs(status: str = "saved"):
     """Score all unscored jobs against uploaded CVs in batches of 20; status='saved' scores saved jobs, status='new' scores new jobs from auto_scoring_depth != 'off' entities only.
 

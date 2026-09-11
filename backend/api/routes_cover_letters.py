@@ -368,8 +368,11 @@ async def generate_cover_letter(body: dict, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(404, "Job not found")
-    if not (job.description or "").strip():
-        raise HTTPException(400, "Job has no description")
+    # Fast-fail: the job needs some JD source; _generate_inner resolves the actual
+    # text (description -> live fetch -> cached page) later, so this skips the slow fetch.
+    # A hand-logged job (Log application) arrives with a URL and no description.
+    if not ((job.description or "").strip() or (job.url or "").strip() or (job.cached_page_text or "").strip()):
+        raise HTTPException(400, "Job has no description, URL, or cached page to write from")
 
     prompt_row = db.query(Setting).filter(Setting.key == "cover_letter_prompt").first()
     if not prompt_row or not (prompt_row.value or "").strip():
@@ -422,6 +425,8 @@ async def _generate_inner(resume_id, job_id, voice, length, template, page_forma
                           cover_letter_id=None):
     """Read -> LLM -> write, each with its own short session, so no pooled
     connection is held while the generation call is awaited."""
+    from types import SimpleNamespace
+
     # -- Phase 1: read the evidence and the prompt, then release -------------
     db = SessionLocal()
     try:
@@ -432,7 +437,10 @@ async def _generate_inner(resume_id, job_id, voice, length, template, page_forma
 
         job_company = job.company
         job_title = job.title
-        job_description = job.description or ""
+        # Detached snapshot: phase 1b resolves the JD after this session closes,
+        # so no pooled connection is held across a live page fetch.
+        job_ref = SimpleNamespace(id=job.id, description=job.description,
+                                  url=job.url, cached_page_text=job.cached_page_text)
 
         # Resolve the evidence source: Persona.resume_content or a Resume row.
         persona_as_base = (resume_id == "persona")
@@ -463,6 +471,11 @@ async def _generate_inner(resume_id, job_id, voice, length, template, page_forma
         _provider, _model = _cfg["provider"], _cfg["model"]
     finally:
         db.close()
+
+    # -- Phase 1b: resolve the JD (may fetch the page), no session held ------
+    job_description = await _resolve_tailoring_jd(job_ref)
+    if not job_description:
+        raise RuntimeError(f"cover letter: job {job_id} has no usable description")
 
     # -- Phase 2: the LLM call, with no connection held ----------------------
     async with track_llm_call("cover_letter", _provider, _model, job_id=job_id) as _tracker:

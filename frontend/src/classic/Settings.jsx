@@ -249,7 +249,7 @@ export default function SettingsPage() {
             <Info size={15} className="text-gray-400 dark:text-gray-500 cursor-help" />
             <div className="hidden group-hover:block absolute left-6 top-0 z-50 w-80 p-3 text-xs bg-gray-900 text-gray-100 rounded-lg shadow-lg leading-relaxed">
               <p className="font-semibold mb-1.5">Provider &amp; model config (used by every AI feature)</p>
-              <p className="mb-1.5"><b>Primary LLM</b> — the default provider + model every AI feature uses. Claude API uses the settings key (or ANTHROPIC_API_KEY). Claude Code uses your subscription via OAuth (same models as Claude API). OpenAI/Ollama use their keys. <b>OpenRouter</b> reaches every vendor with one key — vendor-prefixed slugs (e.g. <code>anthropic/claude-sonnet-5</code>), no prompt-cache discount.</p>
+              <p className="mb-1.5"><b>Primary LLM</b> — the default provider + model every AI feature uses. Claude API uses the settings key (or ANTHROPIC_API_KEY). Claude Code and Codex CLI use subscription logins. OpenAI/Ollama use their keys. <b>OpenRouter</b> reaches every vendor with one key — vendor-prefixed slugs (e.g. <code>anthropic/claude-sonnet-5</code>), no prompt-cache discount.</p>
               <p><b>Add Custom Model</b> — type to search a provider's live catalog (OpenRouter / OpenAI / Claude) or enter any slug, then Add. Models appear in the dropdowns; the × on a chip deletes one (removals persist).</p>
             </div>
           </div>
@@ -532,7 +532,7 @@ export default function SettingsPage() {
             />
             Prompt Caching (Anthropic)
           </label>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Send the rubric + Resumes + schema as a cached block so subsequent scoring calls reuse it at ~10× cheaper input tokens. Only active when provider is <code>claude_api</code>; no effect with <code>claude_code</code> or local providers. Disable as a rollback lever.</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Send the rubric + Resumes + schema as a cached block so subsequent scoring calls reuse it at ~10× cheaper input tokens. Only active when provider is <code>claude_api</code>; no effect with subscription CLI or local providers. Disable as a rollback lever.</p>
         </div>
         <div className="mt-4">
           <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Default Scoring Depth</label>

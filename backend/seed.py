@@ -570,6 +570,37 @@ def run_migrations(db):
         "CREATE TABLE IF NOT EXISTS tracer_links (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), token VARCHAR(10) UNIQUE NOT NULL, resume_id UUID NOT NULL REFERENCES resumes(id) ON DELETE CASCADE, destination_url VARCHAR NOT NULL, source_label VARCHAR NOT NULL, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW())",
         "CREATE INDEX IF NOT EXISTS idx_tracer_links_token ON tracer_links(token)",
         "CREATE TABLE IF NOT EXISTS tracer_click_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tracer_link_id UUID NOT NULL REFERENCES tracer_links(id) ON DELETE CASCADE, clicked_at TIMESTAMPTZ DEFAULT NOW() NOT NULL, device_type VARCHAR DEFAULT 'unknown', ua_family VARCHAR DEFAULT 'unknown', os_family VARCHAR DEFAULT 'unknown', referrer_host VARCHAR, ip_hash VARCHAR, is_likely_bot BOOLEAN DEFAULT FALSE)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS loc_country VARCHAR(2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS loc_region VARCHAR(64)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS loc_city VARCHAR(120)",
+        # region was VARCHAR(3) at first (US/CA codes); regions elsewhere are names ("Hesse");
+        # city is bounded because it is indexed (a btree entry caps near 2704 bytes)
+        "ALTER TABLE jobs ALTER COLUMN loc_region TYPE VARCHAR(64)",
+        "ALTER TABLE jobs ALTER COLUMN loc_city TYPE VARCHAR(120)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_loc_country ON jobs(loc_country)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_loc_region ON jobs(loc_region)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_loc_city ON jobs(loc_city)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS arr_remote BOOLEAN",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS arr_hybrid BOOLEAN",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS arr_onsite BOOLEAN",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_arr_remote ON jobs(arr_remote)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_arr_hybrid ON jobs(arr_hybrid)",
+        "CREATE INDEX IF NOT EXISTS ix_jobs_arr_onsite ON jobs(arr_onsite)",
+        """CREATE TABLE IF NOT EXISTS job_locations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            country VARCHAR(2),
+            region VARCHAR(64),
+            city VARCHAR(120),
+            is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+            CONSTRAINT uq_job_location UNIQUE (job_id, country, region, city)
+        )""",
+        "ALTER TABLE job_locations ALTER COLUMN region TYPE VARCHAR(64)",
+        "ALTER TABLE job_locations ALTER COLUMN city TYPE VARCHAR(120)",
+        "CREATE INDEX IF NOT EXISTS ix_job_locations_job_id ON job_locations(job_id)",
+        "CREATE INDEX IF NOT EXISTS ix_job_locations_country ON job_locations(country)",
+        "CREATE INDEX IF NOT EXISTS ix_job_locations_region ON job_locations(region)",
+        "CREATE INDEX IF NOT EXISTS ix_job_locations_city ON job_locations(city)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS short_id INTEGER UNIQUE",
         "CREATE SEQUENCE IF NOT EXISTS jobs_short_id_seq START 1",
         "ALTER TABLE jobs ALTER COLUMN short_id SET DEFAULT nextval('jobs_short_id_seq')",
@@ -635,6 +666,8 @@ def run_migrations(db):
         "ALTER TABLE job_runs ADD CONSTRAINT job_runs_target_job_id_fkey FOREIGN KEY (target_job_id) REFERENCES jobs(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_job_runs_target_job_id ON job_runs(target_job_id)",
         """ALTER TABLE companies ADD COLUMN IF NOT EXISTS selected_resume_ids JSONB DEFAULT '[]'::jsonb""",
+        # ADD COLUMN is a no-op where create_all() already built the column from
+        # Column(JSON), so it can be native `json` here too. Cast every reference.
         # Translate selected_cv_ids → selected_resume_ids by matching CV.version to Resume.name.
         # Idempotent: only runs while selected_cv_ids still exists and selected_resume_ids is empty.
         """DO $$
@@ -648,13 +681,13 @@ BEGIN
         SELECT co.id AS cid,
                jsonb_agg(r.id::text) AS ids
           FROM companies co
-          CROSS JOIN LATERAL jsonb_array_elements_text(co.selected_cv_ids) AS cid_str(val)
+          CROSS JOIN LATERAL jsonb_array_elements_text(co.selected_cv_ids::jsonb) AS cid_str(val)
           JOIN cvs cv ON cv.id::text = cid_str.val
           JOIN resumes r ON r.name = cv.version AND r.is_base = TRUE
          GROUP BY co.id
       ) AS translated
      WHERE c.id = translated.cid
-       AND (c.selected_resume_ids IS NULL OR c.selected_resume_ids = '[]'::jsonb);
+       AND (c.selected_resume_ids IS NULL OR c.selected_resume_ids::jsonb = '[]'::jsonb);
   END IF;
 END $$;""",
         """ALTER TABLE companies DROP COLUMN IF EXISTS selected_cv_ids""",

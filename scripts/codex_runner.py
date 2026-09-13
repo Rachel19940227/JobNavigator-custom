@@ -60,7 +60,7 @@ def schema_for(operation: str) -> dict:
     if operation == "score_full":
         arr = {"type": "array", "items": {"type": "string"}}
         props = {"scores": scores, "best_cv": {"type": "string"},
-                 "job_category": {"type": "string"}, "summary": {"type": "string"},
+                 "job_category": {"type": "string", "enum": ["Business Analyst", "Project", "Product", "Data", "Software Development", "IT Support", "Testing / QA"]}, "summary": {"type": "string"},
                  "breakdown": {"type": "object", "additionalProperties": False,
                                "required": ["skills", "experience", "domain", "role", "requirements"],
                                "properties": {k: {"type": "number", "minimum": 0, "maximum": 20} for k in ["skills", "experience", "domain", "role", "requirements"]}},
@@ -72,7 +72,7 @@ def schema_for(operation: str) -> dict:
                                     "matched": {"type": "boolean"},
                                     "severity": {"type": "string", "enum": ["required", "preferred"]}},
                  }},
-                 "keyword_coverage_pct": {"type": "number"}, "matched_keywords": arr,
+                 "keyword_coverage_pct": {"type": "number", "minimum": 0, "maximum": 100}, "matched_keywords": arr,
                  "missing_keywords": arr, "experience_gaps": arr, "potential_concerns": arr,
                  "hard_blockers": arr, "ats_tip": {"type": "string"}}
         return {"type": "object", "additionalProperties": False,

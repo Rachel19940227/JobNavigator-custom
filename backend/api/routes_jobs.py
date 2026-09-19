@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc, text, func
+from sqlalchemy import and_, desc, asc, or_, text, func
 from backend.models.db import get_db, Job, find_company_by_name
 from backend.api._input import str_field, uuid_filter
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
@@ -456,13 +456,13 @@ def list_jobs(
     total = q.count()
 
     if sort_by == "score":
-        q = q.order_by(desc(Job.best_cv_score).nullslast())
+        q = q.order_by(desc(Job.best_cv_score).nullslast(), Job.id)
     elif sort_by == "salary":
-        q = q.order_by(desc(Job.salary_max).nullslast())
+        q = q.order_by(desc(Job.salary_max).nullslast(), Job.id)
     elif sort_by == "company":
-        q = q.order_by(asc(Job.company))
+        q = q.order_by(asc(Job.company), Job.id)
     else:  # "date" (default)
-        q = q.order_by(desc(Job.discovered_at))
+        q = q.order_by(desc(Job.discovered_at), Job.id)   # id tiebreak: LIMIT/OFFSET over a tie-heavy sort is not stable without one
 
     jobs = q.offset(offset).limit(limit).all()
 

@@ -317,7 +317,9 @@ async def _call_codex_with_local_fallback(operation: str, prompt: str, system: s
     for attempt in range(1, 3):
         attempts = attempt
         try:
-            result = await _call_codex_runner(operation, prompt, system, max_tokens, model=requested_model)
+            # Pass the model positionally so local runner adapters and test doubles
+            # that predate the optional keyword remain compatible.
+            result = await _call_codex_runner(operation, prompt, system, max_tokens, requested_model)
             logger.info("Codex dispatch completed operation=%s attempt=%d duration_ms=%d",
                         operation, attempt, int((time.monotonic() - started) * 1000))
             return {**result, "provider": "codex_cli", "model": requested_model,

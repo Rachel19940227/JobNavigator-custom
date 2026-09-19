@@ -16,7 +16,7 @@ from pypdf import PdfWriter, PdfReader
 from backend.models.db import get_db, CoverLetter, Resume, Job, Setting, Persona, TracerLink, TracerClickEvent, SessionLocal
 from backend.api._input import str_field, uuid_filter
 from backend.job_monitor import launch_background, JobAlreadyRunningError
-from backend.api.routes_resumes import _download_filename, _get_browser, _rewrite_urls_with_tracers, _render_html as _render_resume_html  # shared with resumes
+from backend.api.routes_resumes import _download_filename, _get_browser, _resolve_tailoring_jd, _rewrite_urls_with_tracers, _render_html as _render_resume_html  # shared with resumes
 
 logger = logging.getLogger("jobnavigator.cover_letters")
 

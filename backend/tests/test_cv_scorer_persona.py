@@ -112,7 +112,8 @@ async def test_score_single_job_persona_id_uses_persona_text(test_db, monkeypatc
 
     captured = {}
 
-    async def fake_score_job_sync(job_obj, cv_texts, db=None, depth="full", preloaded_text=None):
+    async def fake_score_job_sync(job_obj, cv_texts, db=None, depth="full", preloaded_text=None,
+                                  model_override=None):
         captured["cv_texts"] = cv_texts
         return {"Persona": {"score": 80, "summary": "Good fit"}}
 

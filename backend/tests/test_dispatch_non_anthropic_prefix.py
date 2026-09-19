@@ -37,12 +37,12 @@ async def test_dispatch_concatenates_prefix_for_codex_cli(monkeypatch):
     """codex_cli receives cached_prefix + prompt combined."""
     captured = {}
 
-    async def fake_codex_cli(prompt, system, model, max_tokens):
+    async def fake_codex_runner(operation, prompt, system, max_tokens, model=None):
         captured["prompt"] = prompt
         return {"text": "ok", "usage": {"input_tokens": 1, "output_tokens": 1,
                                             "cache_read_tokens": 0, "cache_write_tokens": 0}}
 
-    monkeypatch.setattr("backend.analyzer.llm_client._call_codex_cli", fake_codex_cli)
+    monkeypatch.setattr("backend.analyzer.llm_client._call_codex_runner", fake_codex_runner)
     from backend.analyzer.llm_client import _dispatch
     await _dispatch(
         provider="codex_cli", model="gpt-5.6-sol", api_key="",

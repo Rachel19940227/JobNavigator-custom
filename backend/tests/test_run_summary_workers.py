@@ -14,7 +14,8 @@ async def test_score_single_job_returns_summary(test_db, monkeypatch):
     test_db.add_all([job, resume])
     test_db.commit()
 
-    async def fake_score(job_obj, cv_texts, db=None, depth="full", preloaded_text=None):
+    async def fake_score(job_obj, cv_texts, db=None, depth="full", preloaded_text=None,
+                         model_override=None):
         return {"scores": {"PM": 84}, "best_cv": "PM"}
 
     monkeypatch.setattr(scorer, "score_job_sync", fake_score)
@@ -107,7 +108,8 @@ async def test_score_resume_worker_returns_summary(test_db, monkeypatch):
     test_db.add(copy)
     test_db.commit()
 
-    async def fake_score(job_obj, cv_texts, db=None, depth="full", preloaded_text=None):
+    async def fake_score(job_obj, cv_texts, db=None, depth="full", preloaded_text=None,
+                         model_override=None):
         return {"scores": {"Tailored": 77}}
 
     monkeypatch.setattr(scorer, "score_job_sync", fake_score)

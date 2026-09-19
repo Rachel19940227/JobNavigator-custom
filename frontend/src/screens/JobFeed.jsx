@@ -6,6 +6,7 @@ import ConfirmDialog from '../ConfirmDialog'
 import { useEscape, useSettled, useSingleOpen, useWarm, NBSP, DASH } from '../hooks'
 import { Button, Card, Check as UICheck, CheckGlyph, CopyGlyph, CrossGlyph, FooterRow, GlyphBadge, Heading, HeaderRow, Helper, IconButton, Input, kb, Label, Link, Menu, MenuItem, Meter, ModalPanel, NavLink, PageTitle, Pill, Row, Rule, ScoreRing, SearchInput, SectionHead, Segmented, Spinner, TableHead, TableRow } from '../ui'
 import { ANALYZE, SCORE_RESUME, TAILOR, activityText, feedActivity, flightDetail, flightTypes, ghostTabs, tabBusy, tabBusyHint, tailorMarkTitle } from './feedActivity'
+import { PICK_KEY, clickMods, clickSelection } from './rowSelect'
 
 const FILTERS_KEY = 'v2_feed_filters_v3'
 const SORT_KEY = 'v2_feed_sort'
@@ -73,7 +74,8 @@ const BADGE = {
 // surfaces, so these keep their own look — one object so they cannot drift.
 const RAIL_BTN = {
   height: 27, padding: '0 11px', border: '1px solid var(--on-rail-line)', borderRadius: 'var(--radius-control)',
-  display: 'flex', alignItems: 'center', fontSize: 11.5, color: 'var(--rail-ink)', cursor: 'pointer',
+  // --ctl-line, not the v2-ctl 1: at 1 the line box is the em and Plex's ink rides high in a centred box (see Select)
+  display: 'flex', alignItems: 'center', fontSize: 11.5, lineHeight: 'var(--ctl-line)', color: 'var(--rail-ink)', cursor: 'pointer',
 }
 const SOURCE_LABELS = {
   direct: 'Direct', extension: 'Extension', jobspy_linkedin: 'LinkedIn', jobspy_indeed: 'Indeed',
@@ -84,7 +86,7 @@ const SOURCE_LABELS = {
 const srcLabel = (s) => SOURCE_LABELS[s] || s || ''
 const STATUS_OPTS = [['new', 'New'], ['saved', 'Saved'], ['applied', 'Applied'], ['skip', 'Skip'], ['ignored', 'Ignored']]
 const SORT_OPTS = [['score', 'Top score'], ['date', 'Newest first'], ['salary', 'Salary, high to low'], ['company', 'Company A–Z']]
-const DEFAULTS = { status: [], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '60', max_salary: '' }
+const DEFAULTS = { status: ['new'], company: [], source: [], h1b_verdict: [], location: [], arrangement: [], min_score: '', min_salary: '60', max_salary: '' }
 
 // small dropdown shell (trigger pill + panel + backdrop). Flips to right-align
 // when the panel would overflow the viewport's right edge.
@@ -132,9 +134,8 @@ function Check({ on, label, count, onClick }) {
   )
 }
 
-// pick modifier: ⌘ on macOS, Ctrl elsewhere (matches rowClick's metaKey||ctrlKey)
-const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '')
-const PICK_KEY = IS_MAC ? '⌘' : 'Ctrl'
+// pick modifier: ⌘ on macOS, Ctrl elsewhere (matches rowClick's metaKey||ctrlKey).
+// Shared with the Applications list, which carries the same selection gestures.
 const SHORTCUTS = [['j / f / ↓', 'Next job'], ['k / g / ↑', 'Previous job'], ['s', 'Save / unsave'], ['x', 'Skip'], ['a', 'Mark applied'], ['e / o', 'Open posting'], ['r', 'Rescore'], ['t', 'Tailor résumé'], ['c', 'Cover letter'], ['Esc', 'Close menus'], [`${PICK_KEY}-click`, 'Select'], ['Shift-click', 'Select range']]
 
 // ── component ────────────────────────────────────────────────────────────
@@ -291,7 +292,7 @@ export default function V2JobFeed() {
   // OPEN set (new + saved); skipped/applied/ignored need an explicit Status filter.
   const facetParams = useMemo(() => {
     const p = {}
-    p.status = filters.status.length ? filters.status.join(',') : 'new,saved'
+    if (filters.status.length) p.status = filters.status.join(',')   // nothing picked = every status; the first-run default is New (DEFAULTS)
     if (filters.company.length) p.company = filters.company.join(',')
     if (filters.source.length) p.source = filters.source.join(',')
     if (filters.h1b_verdict.length) p.h1b_verdict = filters.h1b_verdict.join(',')
@@ -368,10 +369,19 @@ export default function V2JobFeed() {
     return p
   }, [facetParams, sortBy])
 
+  // Every list load belongs to a generation; a filter or sort change starts a new one.
+  // A response from an older generation is dropped, so a slow unfiltered page cannot
+  // overwrite a faster filtered one, and a page requested just before a filter change
+  // cannot be appended under the new filter (R5: company filter + scroll showed other companies).
+  const loadGenRef = useRef(0)
+  const loadingMoreRef = useRef(false)
   const fetchJobs = useCallback(async () => {
+    const gen = ++loadGenRef.current
+    loadingMoreRef.current = false   // an older page load no longer owns the list
     setLoading(true)
     try {
       const { data } = await api.get('/jobs', { params: buildParams(0) })
+      if (gen !== loadGenRef.current) return
       const n = (data.jobs || []).length
       setJobs(data.jobs || [])
       setTotal(data.total || 0)
@@ -409,11 +419,11 @@ export default function V2JobFeed() {
   }, [addJobUrl, addJobMode, addJobTitle, addJobCompany, addJobLocation, addJobDescription, addingJob, pushToast, refreshStats])
 
   // append next page (infinite scroll + refill after triage drains the list)
-  const loadingMoreRef = useRef(false)
   const offsetRef = useRef(offset); useEffect(() => { offsetRef.current = offset }, [offset])
   const hasMoreRef = useRef(hasMore); useEffect(() => { hasMoreRef.current = hasMore }, [hasMore])
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current || !hasMoreRef.current) return
+    const gen = loadGenRef.current
     loadingMoreRef.current = true; setLoadingMore(true)
     try {
       // The backend orders by ONE column with no tiebreaker (routes_jobs.py:122-129),
@@ -430,6 +440,7 @@ export default function V2JobFeed() {
       for (let page = 0; page < 6 && added === 0 && more; page += 1) {
         // eslint-disable-next-line no-await-in-loop
         const { data } = await api.get('/jobs', { params: buildParams(off) })
+        if (gen !== loadGenRef.current) return   // the filter changed while this page was in flight
         const fetched = data.jobs || []
         const grand = data.total || 0
         setTotal(grand)
@@ -442,7 +453,7 @@ export default function V2JobFeed() {
       setOffset(off)
       setHasMore(more)
     } catch (e) { console.error('load more failed', e) }
-    loadingMoreRef.current = false; setLoadingMore(false)
+    finally { if (gen === loadGenRef.current) { loadingMoreRef.current = false }; setLoadingMore(false) }
   }, [buildParams])
   const onListScroll = useCallback((e) => {
     const el = e.currentTarget
@@ -694,8 +705,10 @@ export default function V2JobFeed() {
 
   // selection
   const rowClick = (e, i, job) => {
-    if (e.metaKey || e.ctrlKey) { setChecked((p) => { const n = new Set(p); n.has(job.id) ? n.delete(job.id) : n.add(job.id); return n }); lastIdx.current = i; return }
-    if (e.shiftKey && lastIdx.current != null) { const [a, b] = [lastIdx.current, i].sort((x, y) => x - y); setChecked((p) => { const n = new Set(p); for (let k = a; k <= b; k++) n.add(jobs[k].id); return n }); return }
+    const { pick, range } = clickMods(e)
+    const r = clickSelection({ checked, ids: jobs.map((j) => j.id), index: i, anchor: lastIdx.current, pick, range, focused: sel })
+    lastIdx.current = r.anchor
+    if (!r.focus) { setChecked(r.checked); return }
     focusAt(i)
   }
   // restore a whole batch: rows can have had different prior statuses, so group them and
@@ -1120,11 +1133,11 @@ export default function V2JobFeed() {
         </Drop>
         <Drop width={170} active open={menu === 'status'} onToggle={() => setMenu(menu === 'status' ? null : 'status')}
           trigger={(t) => {
-            const statusActive = !(filters.status.length === DEFAULTS.status.length && DEFAULTS.status.every((s) => filters.status.includes(s)))
+            const statusActive = filters.status.length > 0   // like every other filter: a pick is on (green), nothing picked reads "Any" in the plain pill
             return (
               <Pill on={statusActive} onClick={t} ariaExpanded={menu === 'status'} ariaHaspopup="menu">
                 Status · {filters.status.map((s) => STATUS_OPTS.find((o) => o[0] === s)?.[1]).join(', ') || 'Any'}
-                {statusActive ? <span onClick={(e) => { e.stopPropagation(); setF({ status: DEFAULTS.status }) }} style={{ opacity: 0.6 }}>✕</span> : <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>}
+                {statusActive ? <span onClick={(e) => { e.stopPropagation(); setF({ status: [] }) }} style={{ opacity: 0.6 }}>✕</span> : <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>}
               </Pill>
             )
           }}>
@@ -1185,19 +1198,19 @@ export default function V2JobFeed() {
 
           {checked.size > 0 && (
             // ui: keep — floating bulk bar is a pill-shaped *bar* on --rail with --shadow-pop; no primitive owns a bar
-            <div style={{ position: 'absolute', left: '50%', bottom: 14, transform: 'translateX(-50%)', zIndex: 25, display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px 7px 14px', background: 'var(--rail)', borderRadius: 'var(--radius-control)', boxShadow: 'var(--shadow-pop)' }}>
+            <div className="v2-bulkbar" style={{ position: 'absolute', left: '50%', bottom: 14, transform: 'translateX(-50%)', zIndex: 25, display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px 7px 14px', background: 'var(--rail)', borderRadius: 'var(--radius-control)', boxShadow: 'var(--shadow-pop)' }}>
               <span style={{ fontSize: 12, color: 'var(--rail-ink)', fontWeight: 600, whiteSpace: 'nowrap' }}>{checked.size} selected</span>
-              <div style={{ width: 1, height: 16, background: 'var(--on-rail-sep)', margin: '0 3px' }} />
+              <div className="v2-bulksep" style={{ width: 1, height: 16, background: 'var(--on-rail-sep)', margin: '0 3px' }} />
               {/* the one filled control on the bulk bar: --btn-on-rail-shadow is
                   --btn-shadow everywhere but a theme whose accent IS its rail colour,
                   which prepends an --on-rail-line ring so the button has an edge. */}
               <Button size="xs" onClick={() => bulkStatus('saved')} style={{ boxShadow: 'var(--btn-on-rail-shadow)' }}>Save</Button>
               {/* ui: keep — RAIL_BTN controls (--rail-ink on --on-rail-line); the Pill tokens are for light surfaces */}
-              <div onClick={() => bulkStatus('skip')} className="v2-bdc v2-ctl" style={RAIL_BTN}>Skip</div>
+              <div onClick={() => bulkStatus('skip')} className="v2-onrail v2-ctl" style={RAIL_BTN}>Skip</div>
               {/* ui: keep — RAIL_BTN, as above */}
-              <div onClick={bulkScore} className="v2-bdc v2-ctl" style={RAIL_BTN}>Score</div>
-              <div onClick={() => setPicker({ mode: 'tailor', jobs: jobs.filter((j) => checked.has(j.id)) })} style={{ ...RAIL_BTN, gap: 5 }}><span style={{ color: 'var(--rail-accent)' }}>✦</span>Tailor</div>
-              <div onClick={() => setChecked(new Set())} style={{ width: 27, height: 27, borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--on-rail-dim)', cursor: 'pointer' }}>✕</div>
+              <div onClick={bulkScore} className="v2-onrail v2-ctl" style={RAIL_BTN}>Score</div>
+              <div onClick={() => setPicker({ mode: 'tailor', jobs: jobs.filter((j) => checked.has(j.id)) })} className="v2-onrail v2-ctl" style={{ ...RAIL_BTN, gap: 5 }}><span style={{ color: 'var(--rail-accent)' }}>✦</span>Tailor</div>
+              <div onClick={() => setChecked(new Set())} className="v2-onrail" style={{ width: 27, height: 27, borderRadius: 'var(--radius-control)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'var(--on-rail-dim)', cursor: 'pointer' }}>✕</div>
             </div>
           )}
 
@@ -1278,20 +1291,25 @@ export default function V2JobFeed() {
                           {badge && <span style={{ flex: '0 0 auto', fontSize: 9.5, fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', padding: '2px 7px', lineHeight: '14px', borderRadius: 'var(--radius-control)', border: `1px solid ${badge.bd}`, background: badge.bg, color: badge.fg }}>{badge.label}</span>}
                         </div>
                         <div className="v2-rowink" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, lineHeight: 1.2, fontWeight: 450, color: 'var(--text-2)', minWidth: 0, marginTop: -2 }}>
-                          <span title={j.company} style={{ flex: '0 1 auto', minWidth: 0, maxWidth: 230, fontWeight: 500, color: 'var(--ink-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.company}</span>
+                          {/* company keeps its width (up to 230px); the location line is what shrinks */}
+                          <span title={j.company} style={{ flex: '0 0 auto', minWidth: 0, maxWidth: 230, fontWeight: 500, color: 'var(--ink-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.company}</span>
                           {j.location && <span style={{ flex: '0 0 auto', color: 'var(--line)' }}>|</span>}
-                          {j.location && <span title={j.location} style={{ flex: '1 1 auto', minWidth: 40, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.location}</span>}
+                          {j.location && <span title={j.location} style={{ flex: '1 1 0%', minWidth: 40, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{j.location}</span>}
                         </div>
-                        <div className="v2-rowink" style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 11, lineHeight: '13px', fontWeight: 450, minWidth: 0, marginTop: 2 }}>
+                        {/* one line, never wrapped: salary · arrangement · H-1B · age; the verdict shrinks away first
+                            (it is a facet and in the detail pane), the age at the end is always whole */}
+                        <div className="v2-rowink" style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 11, lineHeight: '13px', fontWeight: 450, minWidth: 0, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden' }}>
                           {fmtSalary(j.salary_min, j.salary_max) && <><span style={{ flex: '0 1 auto', minWidth: 0, maxWidth: 170, fontFamily: 'var(--numeral-face)', color: 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fmtSalary(j.salary_min, j.salary_max)}</span><span style={{ color: 'var(--line)' }}>·</span></>}
                           {arrangementsOf(j).map(([key, label, colour]) => (
                             <React.Fragment key={key}>
-                              <span style={{ letterSpacing: '.04em', color: colour }}>{label}</span>
-                              <span style={{ color: 'var(--line)' }}>·</span>
+                              <span style={{ flex: '0 0 auto', letterSpacing: '.04em', color: colour }}>{label}</span>
+                              <span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span>
                             </React.Fragment>
                           ))}
-                          {visa && j.h1b_verdict !== 'unknown' && <><span style={{ letterSpacing: '.04em', color: visa.c }}>{visa.label}</span><span style={{ color: 'var(--line)' }}>·</span></>}
-                          <span style={{ color: 'var(--muted)' }}>{timeAgo(j.discovered_at)}</span>
+                          {/* the verdict is the segment that gives way: it shrinks (flex-shrink 2, ahead of the salary) to an
+                              ellipsis and then to nothing, so the age at the end always stays whole */}
+                          {visa && j.h1b_verdict !== 'unknown' && <><span style={{ flex: '0 2 auto', minWidth: 0, letterSpacing: '.04em', color: visa.c, overflow: 'hidden', textOverflow: 'ellipsis' }} title={visa.label}>{visa.label}</span><span style={{ flex: '0 0 auto', color: 'var(--line)' }}>·</span></>}
+                          <span style={{ flex: '0 0 auto', color: 'var(--muted)' }} title={timeAgo(j.discovered_at)}>{timeAgo(j.discovered_at).replace(/ ago$/, '')}</span>
                         </div>
                       </div>
                     </div>

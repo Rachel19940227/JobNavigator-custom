@@ -333,7 +333,9 @@ async def _score_job_inner(job: Job, cv_texts: dict, db=None, depth="light", pre
         from backend.analyzer.llm_client import resolve_llm_config
         _cfg = resolve_llm_config("scoring", db=settings_db)
         provider_for_log = _cfg["provider"]
-        model_for_log = model_override or _cfg["model"]
+        # Manual Codex scoring uses Sol, but an override must never pair a Codex
+        # model slug with a different configured provider.
+        model_for_log = model_override if model_override and _cfg["provider"] == "codex_cli" else _cfg["model"]
         scoring_api_key = _cfg["api_key"]
         cache_row = settings_db.query(Setting).filter(Setting.key == "prompt_caching_enabled").first()
         caching_enabled = (cache_row.value if cache_row else "true").strip().lower() == "true"

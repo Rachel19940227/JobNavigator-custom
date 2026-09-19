@@ -128,11 +128,29 @@ async def _login(page, context, email: str, password: str):
     await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(random.uniform(1.5, 3.0))
 
-    await page.fill("#username", email)
+    # LinkedIn's current login page uses generated input IDs and a button
+    # without type="submit". Keep the legacy selectors for older layouts.
+    username = page.locator('#username:visible, input[autocomplete="username"]:visible, input[type="email"]:visible').first
+    password_input = page.locator('#password:visible, input[autocomplete="current-password"]:visible, input[type="password"]:visible').first
+    try:
+        await username.wait_for(state="visible", timeout=10000)
+        await password_input.wait_for(state="visible", timeout=10000)
+    except Exception as exc:
+        if "/checkpoint" in page.url or "/challenge" in page.url:
+            raise RuntimeError(
+                "LinkedIn security challenge detected. Complete verification in a browser, then retry."
+            ) from exc
+        raise RuntimeError(
+            "LinkedIn login form did not load; the page may have changed or require verification."
+        ) from exc
+
+    await username.fill(email)
     await asyncio.sleep(random.uniform(0.5, 1.0))
-    await page.fill("#password", password)
+    await password_input.fill(password)
     await asyncio.sleep(random.uniform(0.5, 1.0))
-    await page.click('button[type="submit"]')
+    # Submitting from the password field also works when LinkedIn renders a
+    # localized or dynamically generated sign-in button.
+    await password_input.press("Enter")
 
     try:
         await page.wait_for_url(
@@ -149,7 +167,8 @@ async def _login(page, context, email: str, password: str):
             )
         if "/login" in current_url:
             raise RuntimeError(
-                "LinkedIn login failed — still on login page. Check credentials."
+                "LinkedIn did not accept the sign-in and remained on the login page. "
+                "Check the account's sign-in status and any verification prompt in a browser."
             )
         # Might have landed on an unexpected page but still logged in
         if not await _is_logged_in(page):

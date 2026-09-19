@@ -521,7 +521,7 @@ async def scrape_url_mode(search: Search) -> dict:
             await page.goto(search.direct_url, wait_until="domcontentloaded", timeout=30000)
             if generic._is_gojobs(search.direct_url):
                 await generic._prepare_gojobs_search(page)
-            await asyncio.sleep(3)
+            await generic._wait_for_content(page)
 
             unique_jobs = await generic._extract_all_pages(page, search.direct_url, max_pages=5)
         finally:

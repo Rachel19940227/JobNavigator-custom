@@ -68,6 +68,35 @@ def test_gojobs_url_detection_is_host_specific():
     assert _is_gojobs("https://jobs.ontario.ca/") is False
 
 
+def test_gcjobs_url_detection_is_host_specific():
+    from backend.scraper.ats.generic import _is_gcjobs
+    assert _is_gcjobs("https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page2440")
+    assert not _is_gcjobs("https://emploisfp-psjobs.cfp-psc.gc.ca.evil.example/page2440")
+
+
+@pytest.mark.asyncio
+async def test_gcjobs_poster_links_are_extracted(monkeypatch):
+    from backend.scraper.ats import generic
+    link = MagicMock()
+    link.get_attribute = AsyncMock(return_value="/psrs-srfp/applicant/page1800?poster=2451656")
+    link.query_selector = AsyncMock(return_value=None)
+    link.inner_text = AsyncMock(return_value="Business Analyst")
+    page = MagicMock()
+    page.evaluate = AsyncMock()
+    page.query_selector_all = AsyncMock(
+        side_effect=lambda selector: [link] if selector == generic.GCJOBS_JOB_LINK_SELECTOR else []
+    )
+    monkeypatch.setattr(generic, "_card_location", AsyncMock(return_value=None))
+
+    jobs = await generic._extract_job_links_from_page(
+        page, "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page2440"
+    )
+    assert jobs == [{
+        "title": "Business Analyst",
+        "url": "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1800?poster=2451656",
+    }]
+
+
 @pytest.mark.asyncio
 async def test_gojobs_preview_links_are_extracted():
     from backend.scraper.ats.generic import (

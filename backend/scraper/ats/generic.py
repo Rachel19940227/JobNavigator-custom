@@ -14,6 +14,7 @@ logger = logging.getLogger("jobnavigator.scraper.ats.generic")
 GOJOBS_JOB_LINK_SELECTOR = (
     'a[href*="Preview.aspx"][href*="JobID="][href*="Language=English"]'
 )
+GCJOBS_JOB_LINK_SELECTOR = '#bodyPart a[href*="poster="]'
 
 
 def _is_gojobs(url: str) -> bool:
@@ -23,6 +24,23 @@ def _is_gojobs(url: str) -> bool:
         return host in {"gojobs.gov.on.ca", "www.gojobs.gov.on.ca"}
     except ValueError:
         return False
+
+
+def _is_gcjobs(url: str) -> bool:
+    """GC Jobs renders its results into #bodyPart after a second, session-bound request."""
+    if not isinstance(url, str):
+        return False
+    try:
+        return (urlparse(url).hostname or "").lower() == "emploisfp-psjobs.cfp-psc.gc.ca"
+    except ValueError:
+        return False
+
+
+async def _wait_for_gcjobs_results(page):
+    await page.locator('#bodyPart[aria-busy="false"]').wait_for(timeout=20000)
+    body = await page.locator("#bodyPart").inner_text()
+    if "Lost Connection" in body or "Connexion interrompue" in body:
+        raise RuntimeError("GC Jobs session expired while loading search results")
 
 
 async def _prepare_gojobs_search(page):
@@ -314,6 +332,9 @@ async def _setup_route_blocks(page):
 
 async def _wait_for_content(page, wait_for_selector: str = None):
     """Wait for page content to render. Uses custom selector if provided, else 3s delay."""
+    if _is_gcjobs(page.url):
+        await _wait_for_gcjobs_results(page)
+        return
     if wait_for_selector and wait_for_selector.strip():
         try:
             await page.wait_for_selector(wait_for_selector.strip(), timeout=15000)
@@ -342,6 +363,8 @@ async def _extract_job_links_from_page(page, base_url: str, debug: bool = False)
         '[data-job] a', '.career-listing a', '[role="listitem"] a',
         'a.js-view-job',
     ]
+    if _is_gcjobs(base_url):
+        specific_selectors.insert(0, GCJOBS_JOB_LINK_SELECTOR)
     # Broad URL-pattern selectors — only used as fallback
     broad_selectors = [
         'a[href*="/jobs/"]', 'a[href*="/job/"]',
@@ -478,6 +501,21 @@ async def _click_next_page(page, debug: bool = False) -> bool | dict:
 
     # Detect eightfold pages by checking for their CSS module classes in the DOM
     is_eightfold = await page.query_selector('[class*="pagination-module_pagination"]') is not None
+    if _is_gcjobs(page.url):
+        next_link = page.locator('#bodyPart a[href*="requestedPage=next"]:visible').first
+        if await next_link.count():
+            try:
+                async with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                    await next_link.click()
+                await _wait_for_gcjobs_results(page)
+                if debug:
+                    return {"clicked": True, "candidates": [], "clicked_via": "GC Jobs Next"}
+                return True
+            except Exception as exc:
+                logger.warning("GC Jobs pagination failed: %s", exc)
+        if debug:
+            return debug_info
+        return False
     if is_eightfold:
         next_selectors = [
             'button[class*="pagination-module_pagination-next"]',

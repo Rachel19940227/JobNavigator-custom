@@ -74,6 +74,158 @@ def test_gcjobs_url_detection_is_host_specific():
     assert not _is_gcjobs("https://emploisfp-psjobs.cfp-psc.gc.ca.evil.example/page2440")
 
 
+def test_ottawa_url_detection_and_result_endpoint_are_host_specific():
+    from backend.scraper.ats.generic import _is_ottawa_jobs, _ottawa_search_url
+    source = "https://jobs-emplois.ottawa.ca/city-jobs/viewalljobs/"
+    assert _is_ottawa_jobs(source)
+    assert _ottawa_search_url(source) == (
+        "https://jobs-emplois.ottawa.ca/city-jobs/search/?q="
+    )
+    evil = "https://jobs-emplois.ottawa.ca.evil.example/city-jobs/viewalljobs/"
+    assert not _is_ottawa_jobs(evil)
+    assert _ottawa_search_url(evil) == evil
+
+
+def test_mississauga_view_all_uses_search_results_endpoint():
+    from backend.scraper.ats.generic import _ottawa_search_url
+    assert _ottawa_search_url("https://jobs.mississauga.ca/viewalljobs/") == (
+        "https://jobs.mississauga.ca/search/?q="
+    )
+
+
+def test_icims_search_uses_the_real_iframe_listing():
+    from backend.scraper.ats.generic import _icims_listing_url
+    source = "https://careers-peelregion.icims.com/jobs/search"
+    assert _icims_listing_url(source) == source + "?in_iframe=1"
+    assert _icims_listing_url(source + "?in_iframe=1") == source + "?in_iframe=1"
+
+
+@pytest.mark.asyncio
+async def test_peoplesoft_signin_page_is_an_explicit_error():
+    from backend.scraper.ats.generic import _raise_if_access_blocked
+    page = MagicMock()
+    page.title = AsyncMock(return_value="Careers")
+    page.query_selector = AsyncMock(return_value=MagicMock())
+    with pytest.raises(RuntimeError, match="sign-in or verification"):
+        await _raise_if_access_blocked(
+            page,
+            "https://jobposting.ottawahospital.on.ca/psc/jobposting/EMPLOYEE/HRMS/c/jobs",
+        )
+
+
+def test_peoplesoft_detail_url_preserves_site_and_sets_opening():
+    from backend.scraper.ats.generic import _peoplesoft_job_url
+    url = _peoplesoft_job_url(
+        "https://jobposting.ottawahospital.on.ca/psc/x?Page=HRS_APP_SCHJOB_FL&SiteId=2",
+        "112982",
+    )
+    assert "JobOpeningId=112982" in url
+    assert "SiteId=2" in url
+    assert "Page=HRS_APP_JBPST_FL" in url
+
+
+@pytest.mark.asyncio
+async def test_ottawa_extracts_only_job_title_links(monkeypatch):
+    from backend.scraper.ats import generic
+    job = MagicMock()
+    job.get_attribute = AsyncMock(
+        return_value="/city-jobs/job/Ottawa-ON-Business-Analyst/123/"
+    )
+    job.query_selector = AsyncMock(return_value=None)
+    job.inner_text = AsyncMock(return_value="Business Analyst")
+    language = MagicMock()
+    language.get_attribute = AsyncMock(return_value="?locale=fr_CA")
+    language.query_selector = AsyncMock(return_value=None)
+    language.inner_text = AsyncMock(return_value="Français")
+
+    page = MagicMock()
+    page.evaluate = AsyncMock()
+    page.query_selector_all = AsyncMock(
+        side_effect=lambda selector: (
+            [job] if selector == generic.OTTAWA_JOB_LINK_SELECTOR else
+            [language] if selector == '[role="listitem"] a' else []
+        )
+    )
+    monkeypatch.setattr(generic, "_card_location", AsyncMock(return_value=None))
+
+    jobs = await generic._extract_job_links_from_page(
+        page, "https://jobs-emplois.ottawa.ca/city-jobs/viewalljobs/"
+    )
+    assert jobs == [{
+        "title": "Business Analyst",
+        "url": "https://jobs-emplois.ottawa.ca/city-jobs/job/Ottawa-ON-Business-Analyst/123/",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_ottawa_pagination_uses_next_numbered_page():
+    from backend.scraper.ats.generic import _click_next_page
+    link = MagicMock()
+    link.click = AsyncMock()
+    navigation = MagicMock()
+    navigation.__aenter__ = AsyncMock()
+    navigation.__aexit__ = AsyncMock(return_value=False)
+    page = MagicMock()
+    page.url = "https://jobs-emplois.ottawa.ca/city-jobs/search/?q="
+    page.query_selector = AsyncMock(return_value=link)
+    page.expect_navigation = MagicMock(return_value=navigation)
+
+    result = await _click_next_page(page, debug=True)
+
+    assert result["clicked"] is True
+    assert result["clicked_via"] == "City of Ottawa next numbered page"
+    page.query_selector.assert_any_await(
+        'ul.pagination li.active + li a[title^="Page "]'
+    )
+    link.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_successfactors_search_trigger_submits_empty_search():
+    from backend.scraper.ats.generic import _prepare_successfactors_search
+    button = MagicMock()
+    button.wait_for = AsyncMock()
+    button.click = AsyncMock()
+    page = MagicMock()
+    page.url = "https://career17.sapsf.com/career?company=TTCPRODUCTION"
+    page.query_selector = AsyncMock(return_value=None)
+    page.get_by_role = MagicMock(return_value=button)
+    page.wait_for_selector = AsyncMock()
+
+    await _prepare_successfactors_search(page)
+
+    page.get_by_role.assert_called_once_with(
+        "button", name="Search Jobs", exact=True
+    )
+    button.click.assert_awaited_once_with(timeout=5000)
+
+
+@pytest.mark.asyncio
+async def test_successfactors_numbered_pagination_ignores_show_more():
+    from backend.scraper.ats import generic
+    marker = MagicMock()
+    next_link = MagicMock()
+    next_link.click = AsyncMock()
+    navigation = MagicMock()
+    navigation.__aenter__ = AsyncMock()
+    navigation.__aexit__ = AsyncMock(return_value=False)
+    page = MagicMock()
+    page.url = "https://jobs.hydroone.com/search/"
+    page.expect_navigation = MagicMock(return_value=navigation)
+    page.query_selector = AsyncMock(
+        side_effect=lambda selector: (
+            marker if selector == generic.SUCCESSFACTORS_JOB_LINK_SELECTOR else
+            next_link if selector == 'ul.pagination li.active + li a[title^="Page "]' else
+            None
+        )
+    )
+
+    result = await generic._click_next_page(page, debug=True)
+
+    assert result["clicked_via"] == "SuccessFactors next numbered page"
+    next_link.click.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_gcjobs_poster_links_are_extracted(monkeypatch):
     from backend.scraper.ats import generic
@@ -138,7 +290,7 @@ async def test_gojobs_preparation_clicks_search_and_waits_for_results():
     page.query_selector.assert_awaited_once_with("#ctl00_MainContent_btnSearch")
     button.click.assert_awaited_once_with(timeout=5000)
     page.wait_for_selector.assert_awaited_once_with(
-        GOJOBS_JOB_LINK_SELECTOR, timeout=15000
+        GOJOBS_JOB_LINK_SELECTOR, timeout=25000
     )
 
 

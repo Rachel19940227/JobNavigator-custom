@@ -3,7 +3,7 @@ extracts job-card links, paginates, and returns {title, url} dicts filtered thro
 import asyncio
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from backend.scraper._shared.browser import _get_browser, _new_page, _close_page
 from backend.scraper._shared.filters import _validate_job
@@ -15,6 +15,11 @@ GOJOBS_JOB_LINK_SELECTOR = (
     'a[href*="Preview.aspx"][href*="JobID="][href*="Language=English"]'
 )
 GCJOBS_JOB_LINK_SELECTOR = '#bodyPart a[href*="poster="]'
+OTTAWA_JOB_LINK_SELECTOR = 'a.jobTitle-link[href*="/city-jobs/job/"]'
+SUCCESSFACTORS_JOB_LINK_SELECTOR = 'a.jobTitle-link[href*="/job/"]'
+SUCCESSFACTORS_CLASSIC_JOB_LINK_SELECTOR = 'a[href*="career_job_req_id="]'
+UHN_JOB_LINK_SELECTOR = 'a[href*="/UHNCareers/Home/Posting/"]'
+ICIMS_JOB_LINK_SELECTOR = '.iCIMS_JobCardItem a[href*="/jobs/"][href*="/job"]'
 
 
 def _is_gojobs(url: str) -> bool:
@@ -36,6 +41,135 @@ def _is_gcjobs(url: str) -> bool:
         return False
 
 
+def _is_ottawa_jobs(url: str) -> bool:
+    """Return True only for the City of Ottawa SuccessFactors career site."""
+    if not isinstance(url, str):
+        return False
+    try:
+        return (urlparse(url).hostname or "").lower() == "jobs-emplois.ottawa.ca"
+    except ValueError:
+        return False
+
+
+def _ottawa_search_url(url: str) -> str:
+    """Canonicalise known jobs2web pages whose view-all route omits rows."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path
+    if _is_ottawa_jobs(url) and "/city-jobs/viewalljobs" in path:
+        return "https://jobs-emplois.ottawa.ca/city-jobs/search/?q="
+    if host == "jobs.mississauga.ca" and "/viewalljobs" in path.lower():
+        return "https://jobs.mississauga.ca/search/?q="
+    return url
+
+
+def _is_icims(url: str) -> bool:
+    try:
+        return (urlparse(url).hostname or "").lower().endswith(".icims.com")
+    except (TypeError, ValueError):
+        return False
+
+
+def _icims_listing_url(url: str) -> str:
+    """Render iCIMS' real listing document instead of its empty iframe shell."""
+    if not _is_icims(url) or "/jobs/search" not in urlparse(url).path.lower():
+        return url
+    separator = "&" if "?" in url else "?"
+    return url if "in_iframe=" in url else f"{url}{separator}in_iframe=1"
+
+
+def _is_successfactors_classic(url: str) -> bool:
+    if not isinstance(url, str):
+        return False
+    try:
+        return (urlparse(url).hostname or "").lower().endswith(".sapsf.com")
+    except ValueError:
+        return False
+
+
+def _is_peoplesoft(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+        return host in {"jobposting.ottawahospital.on.ca", "career.sickkids.ca"}
+    except (TypeError, ValueError):
+        return False
+
+
+async def _raise_if_access_blocked(page, source_url: str):
+    """Turn an authentication/challenge document into an actionable failure."""
+    if not _is_peoplesoft(source_url):
+        return
+    title = (await page.title() or "").lower()
+    signin = await page.query_selector('link[href*="signin.css"]')
+    if signin or "human verification" in title or "access denied" in title:
+        raise RuntimeError(
+            "PeopleSoft public job board returned a sign-in or verification page"
+        )
+
+
+def _peoplesoft_job_url(source_url: str, opening_id: str) -> str:
+    parsed = urlparse(source_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({
+        "Action": "U", "FOCUS": "Applicant",
+        "JobOpeningId": str(opening_id),
+        "Page": "HRS_APP_JBPST_FL", "PostingSeq": "1",
+    })
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+async def _extract_peoplesoft_jobs(page, source_url: str) -> list[dict]:
+    """Read PeopleSoft Fluid result rows, whose clickable anchors have no title."""
+    if not _is_peoplesoft(source_url):
+        return []
+    titles = page.locator('span[id^="SCH_JOB_TITLE$"]')
+    jobs = []
+    for index in range(await titles.count()):
+        title_el = titles.nth(index)
+        element_id = await title_el.get_attribute("id") or ""
+        suffix = element_id.rsplit("$", 1)[-1]
+        title = (await title_el.inner_text() or "").strip()
+        opening = page.locator(
+            f'span[id="HRS_APP_JBSCH_I_HRS_JOB_OPENING_ID${suffix}"]'
+        )
+        if not title or not await opening.count():
+            continue
+        opening_id = (await opening.first.inner_text() or "").strip()
+        if not opening_id:
+            continue
+        url = _peoplesoft_job_url(source_url, opening_id)
+        if _validate_job(title, url, structural=True):
+            continue
+        job = {"title": title, "url": url}
+        location = page.locator(f'span[id="LOCATION${suffix}"]')
+        if await location.count():
+            place = (await location.first.inner_text() or "").strip()
+            if place:
+                job["location"] = place
+        posted = page.locator(f'span[id="SCH_OPENED${suffix}"]')
+        if await posted.count():
+            posted_text = (await posted.first.inner_text() or "").strip()
+            if posted_text:
+                job["posted_at"] = posted_text
+        jobs.append(job)
+    return jobs
+async def _prepare_successfactors_search(page):
+    """Submit the empty/default search used by classic SuccessFactors boards."""
+    if not _is_successfactors_classic(page.url):
+        return
+    if await page.query_selector(SUCCESSFACTORS_CLASSIC_JOB_LINK_SELECTOR):
+        return
+    button = page.get_by_role("button", name="Search Jobs", exact=True)
+    try:
+        await button.wait_for(state="visible", timeout=10000)
+    except Exception:
+        return
+    await button.click(timeout=5000)
+    await page.wait_for_selector(
+        SUCCESSFACTORS_CLASSIC_JOB_LINK_SELECTOR, timeout=15000
+    )
+
+
 async def _wait_for_gcjobs_results(page):
     await page.locator('#bodyPart[aria-busy="false"]').wait_for(timeout=20000)
     body = await page.locator("#bodyPart").inner_text()
@@ -46,23 +180,31 @@ async def _wait_for_gcjobs_results(page):
 async def _prepare_gojobs_search(page):
     """Trigger GO Jobs' required empty-filter search and await real results."""
     logger.info("Ontario GO Jobs detected; triggering search")
-    if "validate.perfdrive.com" in (page.url or ""):
-        logger.warning("Ontario GO Jobs blocked the scraper with a Radware CAPTCHA")
-        raise RuntimeError(
-            "Ontario GO Jobs blocked the automated browser with a Radware CAPTCHA; "
-            "retry later after the challenge has cleared"
-        )
-    search_button = await page.query_selector("#ctl00_MainContent_btnSearch")
-    if not search_button:
-        logger.warning("Ontario GO Jobs search preparation failed: Search button not found")
-        raise RuntimeError("Ontario GO Jobs Search button was not found")
-    try:
-        await search_button.click(timeout=5000)
-        await page.wait_for_selector(GOJOBS_JOB_LINK_SELECTOR, timeout=15000)
-    except Exception as exc:
-        logger.warning("Ontario GO Jobs search preparation failed: results did not load: %s", exc)
-        raise RuntimeError("Ontario GO Jobs search results did not load") from exc
-    logger.info("Ontario GO Jobs search results loaded")
+    last_error = None
+    for attempt in range(2):
+        if "validate.perfdrive.com" in (page.url or ""):
+            logger.warning("Ontario GO Jobs blocked the scraper with a Radware CAPTCHA")
+            raise RuntimeError(
+                "Ontario GO Jobs blocked the automated browser with a Radware CAPTCHA; "
+                "retry later after the challenge has cleared"
+            )
+        search_button = await page.query_selector("#ctl00_MainContent_btnSearch")
+        if search_button:
+            try:
+                await search_button.click(timeout=5000)
+                await page.wait_for_selector(GOJOBS_JOB_LINK_SELECTOR, timeout=25000)
+                logger.info("Ontario GO Jobs search results loaded")
+                return
+            except Exception as exc:
+                last_error = exc
+        else:
+            last_error = RuntimeError("Ontario GO Jobs Search button was not found")
+        if attempt == 0:
+            logger.warning("Ontario GO Jobs first load failed; reloading once")
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+    logger.warning("Ontario GO Jobs search preparation failed: %s", last_error)
+    raise RuntimeError("Ontario GO Jobs search results did not load") from last_error
 
 
 # ── Reading a place off a job card ───────────────────────────────────────────
@@ -298,11 +440,16 @@ _CARD_JS = """
     node = node.parentElement;
   }
   let hint = null;
+  let posted = null;
   try {
     const locEl = card.querySelector('[class*="location" i], [data-automation-id*="location" i], [itemprop="jobLocation"], [class*="Location"]');
     if (locEl) hint = (locEl.innerText || '').trim().slice(0, 120);
   } catch (e) { hint = null; }
-  return {text: (card.innerText || '').slice(0, LIMIT), hint: hint};
+  try {
+    const dateEl = card.querySelector('time[datetime], [data-automation-id*="posted" i], .jobDate, [class*="posting-date" i], [class*="posted-date" i]');
+    if (dateEl) posted = dateEl.getAttribute('datetime') || dateEl.getAttribute('title') || (dateEl.innerText || '').trim().slice(0, 80);
+  } catch (e) { posted = null; }
+  return {text: (card.innerText || '').slice(0, LIMIT), hint: hint, posted: posted};
 }
 """
 
@@ -316,6 +463,15 @@ async def _card_location(el, title: str):
     if not isinstance(data, dict):
         return None
     return _card_place(data.get("text") or "", title, data.get("hint"))
+
+
+async def _card_posted_at(el):
+    """Return only an explicit date element from this card; never infer one."""
+    try:
+        data = await el.evaluate(_CARD_JS)
+        return data.get("posted") if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 # ── Route blocking ───────────────────────────────────────────────────────────
@@ -354,8 +510,16 @@ async def _extract_job_links_from_page(page, base_url: str, debug: bool = False)
     jobs_by_url = {}      # URL -> job dict (valid jobs)
     rejected = []         # debug: rejected entries
 
+    peoplesoft_jobs = await _extract_peoplesoft_jobs(page, base_url)
+    if peoplesoft_jobs:
+        return (peoplesoft_jobs, rejected) if debug else peoplesoft_jobs
+
     # Specific selectors first — if these find results, skip the broad ones
     specific_selectors = [
+        UHN_JOB_LINK_SELECTOR,
+        ICIMS_JOB_LINK_SELECTOR,
+        SUCCESSFACTORS_JOB_LINK_SELECTOR,
+        SUCCESSFACTORS_CLASSIC_JOB_LINK_SELECTOR,
         GOJOBS_JOB_LINK_SELECTOR,
         '[class*="position-card"] a', '[class*="position-title"] a',
         '[data-automation-id="jobTitle"]',
@@ -365,6 +529,9 @@ async def _extract_job_links_from_page(page, base_url: str, debug: bool = False)
     ]
     if _is_gcjobs(base_url):
         specific_selectors.insert(0, GCJOBS_JOB_LINK_SELECTOR)
+    if _is_ottawa_jobs(base_url):
+        # This excludes language/category navigation links by construction.
+        specific_selectors.insert(0, OTTAWA_JOB_LINK_SELECTOR)
     # Broad URL-pattern selectors — only used as fallback
     broad_selectors = [
         'a[href*="/jobs/"]', 'a[href*="/job/"]',
@@ -422,13 +589,25 @@ async def _extract_job_links_from_page(page, base_url: str, debug: bool = False)
                             rejected.append({"title": "(empty)", "url": href, "selector": selector, "reason": "No text"})
                         continue
 
-                    reason = _validate_job(text, href)
+                    structural = selector in {
+                        UHN_JOB_LINK_SELECTOR,
+                        SUCCESSFACTORS_JOB_LINK_SELECTOR,
+                        SUCCESSFACTORS_CLASSIC_JOB_LINK_SELECTOR,
+                        GOJOBS_JOB_LINK_SELECTOR,
+                        GCJOBS_JOB_LINK_SELECTOR,
+                        OTTAWA_JOB_LINK_SELECTOR,
+                        ICIMS_JOB_LINK_SELECTOR,
+                    }
+                    reason = _validate_job(text, href, structural=structural)
                     if reason is None:
                         job = {"title": text, "url": href}
                         place = await _card_location(el, text)
                         if place:
                             job["location"] = place
                             job["locations"] = _split_places(place)
+                        posted = await _card_posted_at(el)
+                        if posted:
+                            job["posted_at"] = posted
                         jobs_by_url[href] = job
                     elif debug:
                         rejected.append({"title": text, "url": href, "selector": selector, "reason": reason})
@@ -501,6 +680,67 @@ async def _click_next_page(page, debug: bool = False) -> bool | dict:
 
     # Detect eightfold pages by checking for their CSS module classes in the DOM
     is_eightfold = await page.query_selector('[class*="pagination-module_pagination"]') is not None
+    if _is_ottawa_jobs(page.url):
+        # SuccessFactors has numbered pages but no "Next" control. Select the
+        # page immediately following the active one, not "Last Page" or the
+        # unrelated "Show more options" search control.
+        next_link = await page.query_selector(
+            'ul.pagination li.active + li a[title^="Page "]'
+        )
+        if next_link:
+            try:
+                async with page.expect_navigation(
+                    wait_until="domcontentloaded", timeout=20000
+                ):
+                    await next_link.click()
+                if debug:
+                    return {
+                        "clicked": True,
+                        "candidates": [],
+                        "clicked_via": "City of Ottawa next numbered page",
+                    }
+                return True
+            except Exception as exc:
+                logger.warning("City of Ottawa pagination failed: %s", exc)
+        if debug:
+            return debug_info
+        return False
+    # jobs2web SuccessFactors pages expose numbered pagination. Restrict the
+    # branch to pages with real jobTitle-link elements so ordinary sites are
+    # unaffected and "Show More Options" is never treated as pagination.
+    if await page.query_selector(SUCCESSFACTORS_JOB_LINK_SELECTOR):
+        next_link = await page.query_selector(
+            'ul.pagination li.active + li a[title^="Page "]'
+        )
+        if next_link:
+            try:
+                async with page.expect_navigation(
+                    wait_until="domcontentloaded", timeout=20000
+                ):
+                    await next_link.click()
+                if debug:
+                    return {
+                        "clicked": True, "candidates": [],
+                        "clicked_via": "SuccessFactors next numbered page",
+                    }
+                return True
+            except Exception as exc:
+                logger.warning("SuccessFactors numbered pagination failed: %s", exc)
+        return debug_info if debug else False
+    if _is_successfactors_classic(page.url):
+        next_link = await page.query_selector('a[id$="_next_link"]')
+        if next_link:
+            aria_disabled = await next_link.get_attribute("aria-disabled")
+            classes = (await next_link.get_attribute("class") or "").lower()
+            if aria_disabled != "true" and "disabled" not in classes:
+                await next_link.click(timeout=5000)
+                if debug:
+                    return {
+                        "clicked": True, "candidates": [],
+                        "clicked_via": "SuccessFactors classic Next Page",
+                    }
+                return True
+        return debug_info if debug else False
     if _is_gcjobs(page.url):
         next_link = page.locator('#bodyPart a[href*="requestedPage=next"]:visible').first
         if await next_link.count():
@@ -637,7 +877,8 @@ async def _click_next_page(page, debug: bool = False) -> bool | dict:
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-async def scrape(url: str, browser=None, max_pages: int = 5, debug: bool = False) -> list[dict] | tuple:
+async def scrape(url: str, browser=None, max_pages: int = 5, debug: bool = False,
+                 wait_for_selector: str = None) -> list[dict] | tuple:
     """Fallback scraper for career pages with no ATS match; launches its own browser if one isn't
     passed, then navigates, waits, extracts links, and paginates."""
     own_browser = browser is None
@@ -648,11 +889,17 @@ async def scrape(url: str, browser=None, max_pages: int = 5, debug: bool = False
         page = await _new_page(browser)
         try:
             await _setup_route_blocks(page)
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            navigation_url = _icims_listing_url(_ottawa_search_url(url))
+            await page.goto(navigation_url, wait_until="domcontentloaded", timeout=30000)
+            await _raise_if_access_blocked(page, url)
+            await _prepare_successfactors_search(page)
             if _is_gojobs(url):
                 await _prepare_gojobs_search(page)
-            await _wait_for_content(page)
-            result = await _extract_all_pages(page, url, max_pages=max_pages, debug=debug)
+            await _wait_for_content(page, wait_for_selector)
+            result = await _extract_all_pages(
+                page, url, max_pages=max_pages, debug=debug,
+                wait_for_selector=wait_for_selector,
+            )
             return result
         finally:
             await _close_page(page)

@@ -479,12 +479,21 @@ async def trigger_all_scrapes():
         started = _dt.now(_tz.utc)
         from backend.scraper.orchestrator import run_all as run_all_searches
         outcome = await run_all_searches(force=True) or {}
+        company_outcome = outcome.get("companies") or {}
+        failure_count = company_outcome.get("failed", 0) + len(outcome.get("search_failures") or [])
+        warnings = (outcome.get("search_warnings") or []) + (company_outcome.get("warnings") or [])
+        if failure_count:
+            from backend.job_monitor import mark_run_failed
+            mark_run_failed(f"{failure_count} source(s) failed")
+        elif warnings:
+            from backend.job_monitor import mark_run_warning
+            mark_run_warning("; ".join(warnings[:8]))
         from backend.analyzer.cv_scorer import analyze_unscored_jobs
         await analyze_unscored_jobs()
         summary = _scrape_summary(started)
         # Name what did not run, so a company missing from the sweep is visible in
         # the run history instead of only in the container log.
-        skipped = ((outcome.get("companies") or {}).get("skipped")) or []
+        skipped = company_outcome.get("skipped") or []
         if skipped:
             shown = ", ".join(f"{s['name']} ({s['reason']})" for s in skipped[:4])
             if len(skipped) > 4:
@@ -830,6 +839,16 @@ async def trigger_company_scrape(company_id: str, auto_score: bool = None):
                 # Same audit row the batch path writes, so a manual run also shows
                 # up in /api/scrape-log, is_warning and /health/entities.
                 record_company_scrape_log(c.id, c.name, result or {}, db=db2)
+                if result and result.get("error"):
+                    raise RuntimeError(result["error"])
+                warnings = []
+                if result and result.get("jobs_found", 0) == 0:
+                    warnings.append("0 jobs seen")
+                if result and result.get("missing_descriptions", 0):
+                    warnings.append(f"{result['missing_descriptions']} job(s) missing description")
+                if warnings:
+                    from backend.job_monitor import mark_run_warning
+                    mark_run_warning("; ".join(warnings))
                 should_score = auto_score if auto_score is not None else (c.auto_scoring_depth in ("light", "full"))
                 if should_score and result and result.get("new_jobs", 0) > 0:
                     from backend.analyzer.cv_scorer import analyze_unscored_jobs
@@ -1080,7 +1099,7 @@ def get_in_flight(job_ids: str = None, detail: bool = False):
 @app.get("/api/monitor/finished", tags=["monitor"], summary="Recently finished per-job runs")
 def get_finished(job_ids: str = None, since: str = None,
                  limit: Annotated[int, Query(ge=0, le=1000)] = 200):
-    """Return recently finished (completed/failed) runs for the given jobs, so the dashboard can resolve OK/NOK for an op that just left /monitor/in-flight from the run's actual status rather than job fields."""
+    """Return recently finished (completed/warning/failed) runs for the given jobs, so the dashboard can resolve OK/NOK for an op that just left /monitor/in-flight from the run's actual status rather than job fields."""
     import uuid as _uuid
     from datetime import datetime as _dt, timezone as _tz
 
@@ -1114,7 +1133,7 @@ def get_finished(job_ids: str = None, since: str = None,
     db = SessionLocal()
     try:
         q = db.query(JobRun).filter(
-            JobRun.status.in_(("completed", "failed")),
+            JobRun.status.in_(("completed", "warning", "failed")),
             JobRun.target_job_id.isnot(None),
         )
         if wanted is not None:

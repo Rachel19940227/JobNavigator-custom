@@ -6,7 +6,6 @@ import { RefreshCw, Send, Play, Info, Eye, EyeOff } from 'lucide-react'
 export default function SettingsPage() {
   const [settings, setSettings] = useState({})
   const [resumes, setResumes] = useState([])
-  const [personaPopulated, setPersonaPopulated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [triggerStatus, setTriggerStatus] = useState({})
@@ -50,11 +49,6 @@ export default function SettingsPage() {
     api.get('/resumes?is_base=true')
       .then(({ data }) => setResumes(data || []))
       .catch(() => {})
-    api.get('/persona')
-      .then(({ data }) => {
-        setPersonaPopulated(Object.keys(data?.resume_content || {}).length > 0)
-      })
-      .catch(() => setPersonaPopulated(false))
   }, [])
 
   const saveSetting = async (key, value) => {
@@ -128,23 +122,23 @@ export default function SettingsPage() {
       </div>
 
       {activeTab === 'general' && (<>
-      {/* Default Resume for Scoring */}
+      {/* Resumes used for scoring */}
       <section className="bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg p-4 mb-6">
-        <h2 className="font-semibold text-lg dark:text-gray-100 mb-3">Default Resume for Scoring</h2>
+        <h2 className="font-semibold text-lg dark:text-gray-100 mb-3">Resumes Used for Scoring</h2>
         <p className="text-xs text-gray-400 dark:text-gray-500 mb-3">
-          Used when a Company has no <code>selected_resume_ids</code> configured.
+          Only checked base resumes participate when a Company has no <code>selected_resume_ids</code> configured.
         </p>
-        <select
-          value={settings.default_resume_id || ''}
-          onChange={(e) => saveSetting('default_resume_id', e.target.value)}
-          className="border rounded px-2 py-1.5 text-sm w-full dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600"
-        >
-          <option value="">(use all base resumes + Persona)</option>
-          {(resumes || []).filter(r => r.is_base).map(r => (
-            <option key={r.id} value={r.id}>{r.name}</option>
-          ))}
-          {personaPopulated && <option value="persona">Persona</option>}
-        </select>
+        <div className="space-y-2">
+          {(resumes || []).filter(r => r.is_base).map(r => {
+            const selected = Array.isArray(settings.default_resume_ids) ? settings.default_resume_ids : []
+            return <label key={r.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+              <input type="checkbox" checked={selected.includes(r.id)} className="accent-indigo-600"
+                onChange={e => saveSetting('default_resume_ids', e.target.checked ? [...selected, r.id] : selected.filter(id => id !== r.id))} />
+              {r.name}
+            </label>
+          })}
+          {!resumes.length && <p className="text-sm text-gray-400">No base resumes available.</p>}
+        </div>
       </section>
 
       {/* Scheduler Settings */}

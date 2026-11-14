@@ -122,15 +122,12 @@ const Seg = ({ opts, value, onPick, valueKey = 'id' }) => (
     options={opts.map((o) => ({ value: o[valueKey] !== undefined ? o[valueKey] : o.v, label: o.label, hint: o.hint }))} />
 )
 
-const ResumeChips = ({ resumes, personaPopulated, selected, toggle }) => (
+const ResumeChips = ({ resumes, selected, toggle }) => (
   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
     {resumes.map((r) => {
       const on = selected.includes(r.id)
       return <Pill key={r.id} size="sm" on={on} onClick={() => toggle(r.id)}>{r.name}</Pill>
     })}
-    {personaPopulated && (() => { const on = selected.includes('persona'); return (
-      <Pill size="sm" on={on} onClick={() => toggle('persona')}>Persona</Pill>
-    ) })()}
   </div>
 )
 
@@ -138,7 +135,6 @@ const ResumeChips = ({ resumes, personaPopulated, selected, toggle }) => (
 export default function Companies() {
   const [companies, setCompanies] = useState([])
   const [resumes, setResumes] = useState([])
-  const [personaPopulated, setPersonaPopulated] = useState(false)
   const [downMap, setDownMap] = useState({})
   const [scraping, setScraping] = useState({})       // company id -> true while running
   const [query, setQuery] = useState(() => { try { return localStorage.getItem('company_query') || '' } catch { return '' } })
@@ -182,7 +178,6 @@ export default function Companies() {
   const { ready } = useSettled([
     () => fetchCompanies(),
     () => api.get('/resumes', { params: { is_base: true } }).then(({ data }) => setResumes(Array.isArray(data) ? data : [])).catch(() => { /* silent: the résumé chips are decoration on this screen; the list load has its own error state */ }),
-    () => api.get('/persona').then(({ data }) => setPersonaPopulated(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: one optional chip — absent Persona simply isn't offered */ }),
     () => api.get('/monitor/active').then(({ data }) => setScraping(runMap(data))).catch(() => { /* silent: poller — the 3s tick below retries, a toast per tick would be worse */ }),
   ], reload)
 
@@ -329,7 +324,6 @@ export default function Companies() {
     const ids = c.selected_resume_ids || []
     if (!ids.length) return null
     const names = resumes.filter((r) => ids.includes(r.id)).map((r) => r.name)
-    if (ids.includes('persona')) names.push('Persona')
     // ids that resolve to nothing (list not loaded, or deleted résumés) must still
     // read as a selection, matching what the drawer shows.
     if (names.length) return names.join(', ')
@@ -566,10 +560,10 @@ export default function Companies() {
           pill, bulk, /monitor poll); re-read the row by id each render, keep only `draft` in state. */}
       {drawer && (() => {
         const live = companies.find((c) => c.id === drawer.company.id) || drawer.company
-        return <Drawer state={{ ...drawer, company: live }} setState={setDrawer} onClose={closeDrawer} resumes={resumes} personaPopulated={personaPopulated} onSave={patchCompany} onDelete={deleteCompany} onTest={runTest} testingId={testingId} downReason={downMap[live.id]} onAcknowledge={acknowledgeCompany} />
+        return <Drawer state={{ ...drawer, company: live }} setState={setDrawer} onClose={closeDrawer} resumes={resumes} onSave={patchCompany} onDelete={deleteCompany} onTest={runTest} testingId={testingId} downReason={downMap[live.id]} onAcknowledge={acknowledgeCompany} />
       })()}
       {confirm && <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)} />}
-      {addOpen && <AddModal onClose={() => setAddOpen(false)} resumes={resumes} personaPopulated={personaPopulated} onCreated={fetchCompanies} pushToast={pushToast} />}
+      {addOpen && <AddModal onClose={() => setAddOpen(false)} resumes={resumes} onCreated={fetchCompanies} pushToast={pushToast} />}
       {test && <TestModal test={test} onClose={() => setTest(null)} showShots={showShots} setShowShots={setShowShots} />}
       <ToastStack toasts={toasts} onClose={dismissToast} />
     </div>
@@ -577,7 +571,7 @@ export default function Companies() {
 }
 
 // ── edit drawer ───────────────────────────────────────────────────────────────
-function Drawer({ state, setState, onClose, resumes, personaPopulated, onSave, onDelete, onTest, testingId, downReason, onAcknowledge }) {
+function Drawer({ state, setState, onClose, resumes, onSave, onDelete, onTest, testingId, downReason, onAcknowledge }) {
   const { company, draft } = state
   const [tuning, setTuning] = useState(() => {
     try { const v = localStorage.getItem('company_tuning_open'); if (v !== null) return v === 'true' } catch { /* ignore */ }
@@ -590,7 +584,7 @@ function Drawer({ state, setState, onClose, resumes, personaPopulated, onSave, o
   const subtitle = `${tierLabel(draft.tier, { long: true })} · ${nUrl} career URL${nUrl === 1 ? '' : 's'} · ${nApp} application${nApp === 1 ? '' : 's'}`
   const lca = company.h1b_lca_count
   const lcaLine = lca ? `${lca} H-1B filings on record${company.h1b_approval_rate ? ` · ${company.h1b_approval_rate}% approved` : ''}. Each job's H-1B verdict is based on these.` : 'No H-1B filings on record, so jobs show H-1B Unknown. Leave blank to detect the company from its name.'
-  const selNames = [...resumes.filter((r) => draft.selected_resume_ids.includes(r.id)).map((r) => r.name), ...(draft.selected_resume_ids.includes('persona') ? ['Persona'] : [])]
+  const selNames = resumes.filter((r) => draft.selected_resume_ids.includes(r.id)).map((r) => r.name)
   const resumeHelp = selNames.length ? `New jobs are scored against ${selNames.join(', ')}.` : 'Nothing selected, so new jobs use your default résumé from Settings.'
   const bannerText = warnTextOf(company, downReason)
   const bannerMuted = !!bannerText && warnMuted(company)
@@ -692,7 +686,7 @@ function Drawer({ state, setState, onClose, resumes, personaPopulated, onSave, o
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
             <span style={fieldLabel}>Score new jobs automatically</span>
             <Seg opts={DEPTHS} value={draft.auto_scoring_depth} onPick={(v) => set({ auto_scoring_depth: v })} />
-            <div style={{ paddingTop: 2 }}><ResumeChips resumes={resumes} personaPopulated={personaPopulated} selected={draft.selected_resume_ids} toggle={toggleResume} /></div>
+            <div style={{ paddingTop: 2 }}><ResumeChips resumes={resumes} selected={draft.selected_resume_ids} toggle={toggleResume} /></div>
             <Helper size="xs">{resumeHelp}</Helper>
           </div>
         </div>
@@ -772,7 +766,7 @@ function Drawer({ state, setState, onClose, resumes, personaPopulated, onSave, o
 }
 
 // ── add modal ─────────────────────────────────────────────────────────────────
-function AddModal({ onClose, resumes, personaPopulated, onCreated, pushToast }) {
+function AddModal({ onClose, resumes, onCreated, pushToast }) {
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
   const [aliases, setAliases] = useState('')
@@ -786,7 +780,7 @@ function AddModal({ onClose, resumes, personaPopulated, onCreated, pushToast }) 
   const atsNote = !url ? 'The ATS is detected once you paste a URL.'
     : known ? "Jobs are read from the board's API, so no page settings are needed."
       : 'Unknown job board. The page is read as HTML. If no jobs are found, set a wait-for selector in the company settings.'
-  const selNames = [...resumes.filter((r) => selected.includes(r.id)).map((r) => r.name), ...(selected.includes('persona') ? ['Persona'] : [])]
+  const selNames = resumes.filter((r) => selected.includes(r.id)).map((r) => r.name)
   const scoreNote = depth === 'off' ? 'New jobs arrive unscored — you can score them by hand from the feed.'
     : `New jobs are scored against ${selNames.length ? selNames.join(', ') : 'your default résumé from Settings'} as they arrive.`
   const toggle = (id) => setSelected((s) => s.includes(id) ? s.filter((x) => x !== id) : [...s, id])
@@ -848,7 +842,7 @@ function AddModal({ onClose, resumes, personaPopulated, onCreated, pushToast }) 
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 2, borderTop: '1px solid var(--line-soft)', marginTop: 2 }}>
             <Label style={{ paddingTop: 8 }}>Score new jobs against</Label>
-            <ResumeChips resumes={resumes} personaPopulated={personaPopulated} selected={selected} toggle={toggle} />
+            <ResumeChips resumes={resumes} selected={selected} toggle={toggle} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
               <span style={{ fontSize: 11.5, color: 'var(--text-2)' }}>Depth</span>
               {/* same auto_scoring_depth control as the drawer, via Seg, for a consistent segmented control */}

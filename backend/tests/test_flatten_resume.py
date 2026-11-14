@@ -1,4 +1,4 @@
-"""_flatten_resume must include all sections (header, summary, experience, skills, education, projects, publications) with section headers for readability by the LLM."""
+"""_flatten_resume includes every résumé section with headings for the LLM."""
 from backend.analyzer.cv_scorer import _flatten_resume
 
 
@@ -49,6 +49,14 @@ def test_flatten_includes_publications_section():
     assert "Medium" in out
 
 
+def test_flatten_includes_certifications_section():
+    out = _flatten_resume({
+        "certifications": [{"name": "PMP", "date": "2024-09", "issuer": "PMI"}],
+    })
+    assert "## Certifications" in out
+    assert "PMP" in out and "PMI" in out and "2024-09" in out
+
+
 def test_flatten_omits_empty_sections():
     out = _flatten_resume({"summary": "Just a summary"})
     assert "## Summary" in out
@@ -56,6 +64,7 @@ def test_flatten_omits_empty_sections():
     assert "## Projects" not in out
     assert "## Publications" not in out
     assert "## Education" not in out
+    assert "## Certifications" not in out
 
 
 def test_flatten_empty_input_returns_empty_string():
@@ -63,17 +72,18 @@ def test_flatten_empty_input_returns_empty_string():
     assert _flatten_resume(None) == ""
 
 
-def test_flatten_full_resume_contains_all_six_sections():
+def test_flatten_full_resume_contains_all_sections():
     out = _flatten_resume({
         "header": {"name": "Jane"},
         "summary": "Summary text",
         "experience": [{"title": "PM", "company": "X", "dates": "2020-2024", "bullets": ["b1"]}],
         "skills": {"languages": ["Python", "JS"]},
         "education": [{"degree": "BS", "school": "MIT", "year": "2018"}],
+        "certifications": [{"name": "PMP", "date": "2024-09", "issuer": "PMI"}],
         "projects": [{"name": "P1", "description": "d1"}],
         "publications": [{"title": "T1", "venue": "V1"}],
     })
-    for header in ["## Summary", "## Experience", "## Skills", "## Education", "## Projects", "## Publications"]:
+    for header in ["## Summary", "## Experience", "## Skills", "## Education", "## Certifications", "## Projects", "## Publications"]:
         assert header in out, f"Missing section header: {header}"
 
 

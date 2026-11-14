@@ -6,7 +6,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from typing import Annotated, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -54,6 +54,80 @@ def _linkedin_job_id_from_url(url: str) -> str | None:
     if not match:
         match = re.search(r"(?:^|&)currentJobId=(\d+)(?:&|$)", parsed.query)
     return match.group(1) if match else None
+
+
+def _indeed_job_key_from_url(url: str) -> str | None:
+    """Return an Indeed job key from a public viewjob URL."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not (
+        host == "indeed.com" or host.endswith(".indeed.com")
+    ):
+        return None
+    key = (parse_qs(parsed.query).get("jk") or [""])[0]
+    return key if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", key) else None
+
+
+def _fetch_indeed_job(job_key: str, original_url: str) -> dict:
+    """Fetch one Indeed posting through JobSpy's existing Indeed API client."""
+    from bs4 import BeautifulSoup
+    from jobspy.indeed.constant import api_headers
+    from jobspy.util import create_session
+
+    query = """
+    query GetJobByKey {
+      jobSearch(limit: 1, filters: {keyword: {field: "jobKey", keys: ["%s"]}}) {
+        results { job {
+          key title datePublished description { html }
+          employer { name }
+          location { city admin1Code countryCode formatted { long } }
+        } }
+      }
+    }
+    """ % job_key
+    country = "CA" if (urlparse(original_url).hostname or "").lower().startswith("ca.") else "US"
+    session = create_session(is_tls=False)
+    response = session.post(
+        "https://apis.indeed.com/graphql",
+        headers={**api_headers, "indeed-co": country},
+        json={"query": query},
+        timeout=15,
+        verify=False,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    results = (((payload.get("data") or {}).get("jobSearch") or {}).get("results") or [])
+    job = results[0].get("job") if results else None
+    if not isinstance(job, dict) or job.get("key") != job_key:
+        raise ValueError("Indeed did not return this job; it may have expired")
+
+    description = BeautifulSoup(
+        str((job.get("description") or {}).get("html") or ""), "html.parser"
+    ).get_text("\n", strip=True)
+    employer = job.get("employer") or {}
+    location_data = job.get("location") or {}
+    formatted = location_data.get("formatted") or {}
+    location = formatted.get("long") or ", ".join(filter(None, (
+        location_data.get("city"), location_data.get("admin1Code"), location_data.get("countryCode")
+    )))
+    if not job.get("title") or not employer.get("name") or len(description) < 100:
+        raise ValueError("Indeed returned incomplete job details")
+
+    published = job.get("datePublished")
+    posted_at = None
+    if isinstance(published, (int, float)):
+        posted_at = datetime.fromtimestamp(published / 1000, tz=timezone.utc)
+    return {
+        "title": job["title"],
+        "company": employer["name"],
+        "location": location or None,
+        "description": description[:50_000],
+        "url": original_url,
+        "posted_at": posted_at,
+    }
 
 
 def _fetch_public_linkedin_job(linkedin_id: str) -> dict:
@@ -200,7 +274,11 @@ async def import_job_url(body: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Enter a valid public job URL")
 
     try:
-        data = await _fetch_public_job_url(raw_url)
+        indeed_key = _indeed_job_key_from_url(raw_url)
+        if indeed_key:
+            data = await asyncio.to_thread(_fetch_indeed_job, indeed_key, raw_url)
+        else:
+            data = await _fetch_public_job_url(raw_url)
     except Exception as exc:
         logger.warning("Manual job URL import failed for %s: %s", raw_url, exc)
         raise HTTPException(status_code=422, detail=f"Could not read this job page: {str(exc)}") from exc
@@ -1197,7 +1275,7 @@ def create_manual_job(body: dict, background_tasks: BackgroundTasks, db: Session
 # Column types for the three fields both job writers accept. Without this a
 # `{"saved": "banana"}` reaches the driver and 500s (R4-T1-11); `status` stays a
 # free string on purpose (the feed invents statuses like "ignored").
-_JOB_UPDATE_TYPES = {"seen": bool, "saved": bool, "status": str}
+_JOB_UPDATE_TYPES = {"seen": bool, "saved": bool, "status": str, "description": str}
 
 
 def _validate_job_updates(updates: dict, allowed: set) -> None:
@@ -1280,8 +1358,15 @@ async def update_job(job_id: str, updates: dict, background_tasks: BackgroundTas
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    allowed = {"seen", "saved", "status"}
+    allowed = {"seen", "saved", "status", "description"}
     _validate_job_updates(updates, allowed)
+    if "description" in updates:
+        description = updates["description"].strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="job description is required")
+        if len(description) > 100_000:
+            raise HTTPException(status_code=400, detail="job description is too long")
+        updates["description"] = description
     for key, value in updates.items():
         if key in allowed:
             setattr(job, key, value)
@@ -1335,8 +1420,8 @@ async def update_job(job_id: str, updates: dict, background_tasks: BackgroundTas
             from backend.models.db import find_company_by_name
             existing_co = find_company_by_name(db, job.company.strip())
             if not existing_co:
-                default_resume_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-                default_resume_ids = [default_resume_row.value] if default_resume_row and default_resume_row.value else []
+                from backend.analyzer.cv_scorer import get_default_resume_ids
+                default_resume_ids = get_default_resume_ids(db)
                 new_co = Company(
                     name=job.company.strip(), tier=None, active=False, playwright_enabled=False,
                     selected_resume_ids=default_resume_ids,

@@ -351,8 +351,8 @@ def create_application(
         from backend.models.db import find_company_by_name
         existing_co = find_company_by_name(db, company_name)
         if not existing_co:
-            default_resume_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-            default_resume_ids = [default_resume_row.value] if default_resume_row and default_resume_row.value else []
+            from backend.analyzer.cv_scorer import get_default_resume_ids
+            default_resume_ids = get_default_resume_ids(db)
             new_co = Company(
                 name=company_name, tier=None, active=False, playwright_enabled=False,
                 selected_resume_ids=default_resume_ids,
@@ -385,6 +385,8 @@ def create_application(
 @router.get("")
 def list_applications(
     status: Optional[str] = None,
+    source: Optional[str] = None,
+    company: Optional[str] = None,
     limit: Annotated[int, Query(ge=0, le=2000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
     db: Session = Depends(get_db),
@@ -393,6 +395,19 @@ def list_applications(
     q = db.query(Application).options(selectinload(Application.interviews))
     if status:
         q = q.filter(Application.status == status)
+    # Job already owns both fields, so source/company filtering needs no schema
+    # or duplicated Application columns. Comma-separated source values keep the
+    # endpoint useful for the UI's multi-select while preserving old callers.
+    if source or company:
+        q = q.join(Job, Application.job_id == Job.id)
+    if source:
+        sources = [value.strip() for value in source.split(",") if value.strip()]
+        if sources:
+            q = q.filter(Job.source.in_(sources))
+    if company:
+        companies = [value.strip() for value in company.split(",") if value.strip()]
+        if companies:
+            q = q.filter(Job.company.in_(companies))
 
     total = q.count()
     apps = q.order_by(desc(Application.updated_at)).offset(offset).limit(limit).all()

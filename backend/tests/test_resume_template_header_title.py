@@ -21,6 +21,10 @@ def _render(name, header):
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR / name)))
     # the real renderer's only custom filter (routes_resumes._render_html)
     env.filters["bold"] = lambda text: Markup(re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text or ""))
+    env.filters["month_year"] = lambda value: (
+        f"{value[5:7]}/{value[:4]}" if isinstance(value, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value)
+        else (value or "")
+    )
     return env.get_template("template.html.j2").render(
         header=header, summary="A summary.", experience=[], skills={},
         education=[], projects=[], publications=[],

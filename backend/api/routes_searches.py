@@ -167,6 +167,20 @@ async def trigger_search(search_id: str, auto_score: bool = None, db: Session = 
         # the real text is already persisted on the ScrapeLog row and logged here.
         if isinstance(result, dict) and result.get("error"):
             logger.warning("Search %s finished with scrape error: %s", search_id, result.get("error"))
+            from backend.job_monitor import mark_run_failed
+            mark_run_failed(result["error"])
+        elif isinstance(result, dict):
+            warnings = []
+            if result.get("jobs_found", 0) == 0:
+                warnings.append("0 jobs seen")
+            if result.get("missing_descriptions", 0):
+                warnings.append(f"{result['missing_descriptions']} job(s) missing description")
+            from backend.scraper.orchestrator import source_errors, describe_source_errors
+            if source_errors(result.get("source_breakdown")):
+                warnings.append(describe_source_errors(result.get("source_breakdown")))
+            if warnings:
+                from backend.job_monitor import mark_run_warning
+                mark_run_warning("; ".join(warnings))
         # Returned string becomes JobRun.result_summary (Stats -> Run history), built
         # from the ScrapeLog row the run just wrote so the line and audit row always agree.
         from backend.scraper.orchestrator import summarize_search_run
@@ -183,8 +197,41 @@ async def trigger_search(search_id: str, auto_score: bool = None, db: Session = 
 
 
 @router.post("/{search_id}/test")
+async def start_test_search(search_id: str, db: Session = Depends(get_db)):
+    """Start a preview without holding the browser request open for the scrape."""
+    search = db.query(Search).filter(Search.id == search_id).first()
+    if not search:
+        raise HTTPException(status_code=404, detail="Search not found")
+
+    # JobSpy keyword previews can take several minutes for high result limits.
+    # Run them behind the same polling contract as the browser-based previews so
+    # the dashboard's short request timeout cannot misreport a healthy scrape as
+    # a failure while the server continues working.
+    if search.search_mode == "keyword":
+        run_id = str(uuid.uuid4())[:8]
+        _test_results[run_id] = {"status": "running", "result": None}
+
+        from backend.models.db import SessionLocal
+
+        async def _run_keyword_test():
+            test_db = SessionLocal()
+            try:
+                result = await test_search(search_id, db=test_db)
+                _test_results[run_id] = {"status": "done", "result": result}
+            except Exception as e:
+                logger.error("Test run %s failed: %s", run_id, e)
+                _test_results[run_id] = {"status": "done", "result": {"error": str(e)}}
+            finally:
+                test_db.close()
+
+        asyncio.create_task(_run_keyword_test())
+        return JSONResponse(status_code=202, content={"run_id": run_id, "status": "running"})
+
+    return await test_search(search_id, db=db)
+
+
 async def test_search(search_id: str, db: Session = Depends(get_db)):
-    """Run a search test: keyword mode runs synchronously and returns results directly, while slow modes (levels_fyi, linkedin_personal, jobright, freehire) launch in the background and return a run_id to poll."""
+    """Build a search preview; the HTTP route above runs slow modes asynchronously."""
     search = db.query(Search).filter(Search.id == search_id).first()
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")

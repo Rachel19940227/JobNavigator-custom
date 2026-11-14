@@ -136,6 +136,7 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                 reason = _validate_job(title, job_url)
                 if reason is None:
                     jobs.append({"title": title, "url": job_url,
+                                 "posted_at": posting.get("releasedDate"),
                                  **_location_fields(posting.get("location"))})
                 elif debug:
                     rejected.append({"title": title, "url": job_url,

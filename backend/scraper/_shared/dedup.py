@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import timedelta, timezone
 from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlunparse
 
 logger = logging.getLogger("jobnavigator.dedup")
@@ -195,3 +196,116 @@ def make_content_hash(company: str, title: str) -> str:
     """Hash of company+title only (no URL) for cross-source dedup."""
     raw = f"{(company or '').lower().strip()}{(title or '').lower().strip()}"
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def make_description_fingerprint(description: str | None) -> str:
+    """Stable full-JD fingerprint; whitespace-only board formatting is ignored."""
+    normalized = re.sub(r"\s+", " ", description or "").strip().lower()
+    return hashlib.sha256(normalized.encode()).hexdigest() if normalized else ""
+
+
+def _description_tokens(description: str | None) -> set[str]:
+    """Meaningful normalized words used for conservative cross-board comparison."""
+    return set(re.findall(r"[a-z0-9]+", (description or "").lower()))
+
+
+def _requisition_ids(*values: str | None) -> set[str]:
+    """Extract explicit ATS-style IDs without treating every URL number as one."""
+    found = set()
+    pattern = re.compile(
+        r"(?<![a-z0-9])(jr|req|requisition|job)[^a-z0-9]{0,3}(\d{4,})(?!\d)",
+        re.I,
+    )
+    for value in values:
+        found.update(number for _prefix, number in pattern.findall(value or ""))
+    return found
+
+
+def _utc(dt):
+    """Make database-returned naive timestamps safely comparable to aware ones."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def find_duplicate_posting(db, candidate):
+    """Return an existing copy of ``candidate`` when the evidence is strong.
+
+    URL identity remains the primary dedup layer. This second layer catches two
+    cases URLs cannot represent: one LinkedIn posting cloned for several cities,
+    and one requisition surfaced by two boards. A company/title match alone is
+    deliberately insufficient because employers can have several genuine open
+    requisitions with the same generic title.
+    """
+    from backend.models.db import Job
+
+    if not getattr(candidate, "content_hash", None):
+        return None
+    existing = db.query(Job).filter(Job.content_hash == candidate.content_hash).all()
+    if not existing:
+        return None
+
+    candidate_fp = make_description_fingerprint(getattr(candidate, "description", None))
+    if candidate_fp:
+        for job in existing:
+            if make_description_fingerprint(job.description) == candidate_fp:
+                return job
+
+    # Non-identical board text is accepted only for a recent cross-source copy
+    # in the same parsed city, with one description overwhelmingly contained in
+    # the other. This handles shortened aggregator text without merging separate
+    # same-title requisitions.
+    candidate_tokens = _description_tokens(getattr(candidate, "description", None))
+    candidate_posted = getattr(candidate, "posted_at", None)
+    candidate_place = (
+        getattr(candidate, "loc_country", None),
+        getattr(candidate, "loc_region", None),
+        getattr(candidate, "loc_city", None),
+    )
+    if len(candidate_tokens) < 50 or not candidate_posted or not candidate_place[2]:
+        return None
+
+    for job in existing:
+        if not job.source or job.source == getattr(candidate, "source", None):
+            continue
+        existing_place = (job.loc_country, job.loc_region, job.loc_city)
+        if existing_place != candidate_place:
+            continue
+        if not job.posted_at or abs(_utc(candidate_posted) - _utc(job.posted_at)) > timedelta(hours=72):
+            continue
+        existing_tokens = _description_tokens(job.description)
+        if len(existing_tokens) < 50:
+            continue
+        same_requisition = bool(
+            _requisition_ids(candidate.url, candidate.description)
+            & _requisition_ids(job.url, job.description)
+        )
+        containment = len(candidate_tokens & existing_tokens) / min(
+            len(candidate_tokens), len(existing_tokens)
+        )
+        if same_requisition or containment >= 0.90:
+            return job
+    return None
+
+
+def get_recent_applied_content_hashes(db, days: int = 90) -> set[str]:
+    """Company/title hashes already in the application funnel within ``days``.
+
+    This catches the same posting arriving from a different board with a
+    different URL, while the time window avoids permanently suppressing a
+    genuinely new opening that later reuses a generic title.
+    """
+    from datetime import datetime, timedelta, timezone
+    from backend.models.db import Application, Job
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (
+        db.query(Job.content_hash)
+        .join(Application, Application.job_id == Job.id)
+        .filter(
+            Job.content_hash.isnot(None),
+            Application.applied_at >= cutoff,
+        )
+        .all()
+    )
+    return {row[0] for row in rows if row[0]}

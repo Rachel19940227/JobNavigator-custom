@@ -46,8 +46,8 @@ credits.
 
 ## Safety and fallback
 
-The container can request only `score_light`, `score_full`, or
-`resume_tailoring`; it cannot submit a shell command. Each CLI call receives its
+The container can request only `score_light`, `score_full`,
+`resume_tailoring`, or `cover_letter`; it cannot submit a shell command. Each CLI call receives its
 prompt on standard input, runs in a new empty temporary directory with a
 read-only sandbox, uses an output JSON Schema, and deletes temporary files when
 done. Full prompts, resumes, job descriptions, and credentials are not logged.

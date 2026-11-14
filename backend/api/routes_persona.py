@@ -160,7 +160,7 @@ def _contact_from_header(header: dict) -> dict:
 # Header, which lives in `contact`); defaults keep the node's shape stable for the editor.
 _CONTENT_DEFAULTS = (
     ("summary", ""), ("experience", []), ("skills", {}),
-    ("education", []), ("projects", []), ("publications", []),
+    ("education", []), ("certifications", []), ("projects", []), ("publications", []),
 )
 
 
@@ -257,6 +257,11 @@ async def import_persona(request: Request, file: Optional[UploadFile] = File(Non
 
     contact = _contact_from_header(json_data.get("header") or {})
     content = _resume_content_from(json_data)
+    # The experience bank is user-maintained supporting evidence, not a rendered
+    # resume section. Re-importing a base resume must not erase it.
+    existing_bank = (p.resume_content or {}).get("experience_bank")
+    if isinstance(existing_bank, list) and existing_bank:
+        content["experience_bank"] = copy.deepcopy(existing_bank)
     employer = _current_company_from(content)
     if employer:
         contact["current_company"] = employer

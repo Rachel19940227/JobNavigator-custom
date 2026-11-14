@@ -15,6 +15,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from backend.models.db import get_db, Resume, TracerLink, TracerClickEvent, Setting, Job, Application, SessionLocal, utcnow, Persona
 from backend.api._input import str_field
+from backend.analyzer.jd_for_llm import prepare_jd_for_llm
 from backend.job_monitor import launch_background, JobAlreadyRunningError
 
 
@@ -39,6 +40,13 @@ _TITLE_ROOTS = (
     "lead", "director", "vp", "chief", "intern", "consultant",
     "scientist", "researcher", "specialist", "architect", "owner",
 )
+
+
+def _approved_experience_bank(resume_content: dict | None) -> list[dict]:
+    """Return only approved Persona experience-bank entries for tailoring."""
+    rows = (resume_content or {}).get("experience_bank") or []
+    return [row for row in rows
+            if isinstance(row, dict) and str(row.get("status") or "").lower() == "approved"]
 
 
 def _download_filename(job_title: str, candidate_name: str, document_type: str) -> str:
@@ -758,12 +766,62 @@ def _resolve_chain_score_depth(db) -> str | None:
     return depth_map.get(raw_chain, "light")
 
 
+def _validate_enhancement_gaps(value) -> list[dict]:
+    """Validate the transient, user-confirmed facts used by gap re-tailoring.
+
+    Nothing is persisted separately: the list exists only in the background
+    job arguments and the resulting tailored resume.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 20:
+        raise HTTPException(400, "enhancement_gaps must be a list of at most 20 items")
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise HTTPException(400, "each enhancement gap must be an object")
+        gap = item.get("gap")
+        fact = item.get("fact", "")
+        if not isinstance(gap, str) or not isinstance(fact, str):
+            raise HTTPException(400, "enhancement gap and fact must be text")
+        gap, fact = gap.strip(), fact.strip()
+        if not gap or len(gap) > 2000 or len(fact) > 10_000:
+            raise HTTPException(400, "enhancement gap text is empty or too long")
+        out.append({"gap": gap, "fact": fact})
+    return out
+
+
+def _enhancement_prompt(gaps: list[dict]) -> str:
+    """Small prompt suffix for confirmed gaps; unselected gaps never arrive."""
+    if not gaps:
+        return ""
+    return (
+        "\n\nGAP-BASED RE-TAILORING\n"
+        "The user reviewed the previous gap analysis and confirmed only the items in the JSON below.\n"
+        "Confirmed gaps:\n" + json.dumps(gaps, ensure_ascii=False, indent=2) + "\n\n"
+        "Rules:\n"
+        "1. For an item WITH a non-empty fact, treat only that user-provided fact as true candidate experience. "
+        "The fact may be Chinese or English. Translate Chinese into professional English resume language and "
+        "integrate it into the most relevant existing work experience. You may rewrite an existing bullet or add "
+        "one concise bullet where appropriate.\n"
+        "2. For an item WITHOUT a fact, treat it only as a confirmed skill or knowledge area. Add one concise, "
+        "appropriate keyword to Skills. Do not create or alter work experience from the gap alone.\n"
+        "3. The list contains every selected item; ignore every gap not present in it.\n"
+        "4. Do not invent or infer unsupported employers, projects, dates, metrics, products, technologies, "
+        "responsibilities, achievements, or industries. A gap statement is not evidence beyond the capability named.\n"
+        "5. Preserve the existing resume structure and all relevant truthful content. Avoid duplicate bullets and "
+        "keyword stuffing. Make targeted changes only; do not rewrite unrelated sections.\n"
+        "6. Optimize against the original job description using only these newly confirmed capabilities and facts.\n"
+    )
+
+
 @router.post("/tailor", status_code=202)
 async def tailor_resume(body: dict, db: Session = Depends(get_db)):
     """Tailor a base resume for a job in the background, returning a run_id to track via GET /api/monitor/in-flight; the response's `chain_score` reports the depth of any scoring run that will follow ('light'/'full'/'off'), since only job-linked tailors chain."""
     base_resume_id = body.get("base_resume_id")
     job_id = body.get("job_id")
     job_description = body.get("job_description")
+    enhancement_gaps = _validate_enhancement_gaps(body.get("enhancement_gaps"))
 
     if not base_resume_id:
         raise HTTPException(400, "base_resume_id is required")
@@ -817,9 +875,10 @@ async def tailor_resume(body: dict, db: Session = Depends(get_db)):
                 "base_resume_id": base_resume_id,
                 "job_id": job_id,
                 "job_description_override": job_description,
+                "enhancement_gaps": enhancement_gaps or None,
             },
         )
-        chain_depth = _resolve_chain_score_depth(db) if job_id else None
+        chain_depth = ("full" if enhancement_gaps else _resolve_chain_score_depth(db)) if job_id else None
         return {"run_id": run_id, "status": "running", "chain_score": chain_depth or "off"}
     except JobAlreadyRunningError as e:
         return JSONResponse(
@@ -866,7 +925,8 @@ async def _resolve_tailoring_jd(job, db=None) -> str:
     return job.cached_page_text or ""
 
 
-async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_override: str | None):
+async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_override: str | None,
+                       enhancement_gaps: list[dict] | None = None):
     """Background worker: does the actual LLM tailoring work.
 
     Phased so no DB connection is held across the JD fetch or the LLM call:
@@ -885,12 +945,14 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             # the base. The output Resume has parent_id=None since Persona isn't a
             # Resume row.
             persona_as_base = (base_resume_id == "persona")
+            experience_bank = []
             if persona_as_base:
                 persona_row = db.query(Persona).filter(Persona.id == 1).first()
                 if not persona_row or not (persona_row.resume_content or {}):
                     logger.error("Tailor: persona has no resume_content at execution time")
                     raise RuntimeError("Tailor: persona has no resume_content at execution time")
                 base_data = persona_row.resume_content or {}
+                experience_bank = _approved_experience_bank(base_data)
                 base_name = "Persona"
                 base_template = None
                 base_page_format = None
@@ -901,10 +963,15 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
                     logger.error(f"Tailor: base resume {base_resume_id} missing at execution time")
                     raise RuntimeError(f"Tailor: base resume {base_resume_id} missing at execution time")
                 base_data = base.json_data or {}
-                base_name = base.name
+                # Enhanced tailoring starts from the current tailored copy but
+                # writes a replacement sibling under the original base.
+                base_name = base.name.split(" → ", 1)[0] if enhancement_gaps else base.name
                 base_template = base.template
                 base_page_format = base.page_format
-                base_id_for_parent = base.id
+                base_id_for_parent = (base.parent_id or base.id) if enhancement_gaps else base.id
+                persona_row = db.query(Persona).filter(Persona.id == 1).first()
+                experience_bank = _approved_experience_bank(
+                    persona_row.resume_content if persona_row else {})
 
             jd_text = job_description_override or ""
             job_name = ""
@@ -957,20 +1024,35 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
         # only the base resume's bullets (predictable length); Persona-as-base uses the full pool via persona_tailor_prompt.
 
         prompt = prompt_template.replace("{resume_json}", _json.dumps(resume_sections, indent=2))
-        prompt = prompt.replace("{job_description}", jd_text[:6000])
+        prompt = prompt.replace("{job_description}", prepare_jd_for_llm(jd_text, 6000))
+        if experience_bank:
+            prompt += (
+                "\n\nExperience Bank (approved supporting evidence):\n"
+                + _json.dumps(experience_bank, indent=2)
+                + "\n\nExperience Bank rules:\n"
+                "- Every entry is verified candidate-provided evidence from the iFLYTEK role only.\n"
+                "- Use only entries relevant to the JD, and only to enhance or rewrite the iFLYTEK experience.\n"
+                "- Never move or attribute these facts to another employer. If the resume has no iFLYTEK role, do not use them.\n"
+                "- You may rephrase or combine relevant facts using JD terminology, while preserving facts, clients, metrics, technologies, responsibilities, and outcomes.\n"
+                "- Experience Bank content is optional supporting evidence; omit irrelevant entries.\n"
+                "- Prefer preserving relevant quantified evidence.\n"
+            )
         prompt = (
             "MANDATORY PRESERVATION POLICY:\n"
             "- Preserve every truthful resume skill, tool, domain, responsibility, achievement, and keyword that is relevant to the job.\n"
             "- Do not delete relevant evidence merely to shorten or specialize the resume; retain it in the appropriate section and reorder it toward the JD.\n"
-            "- Never fabricate employment, platforms, certifications, dates, metrics, or responsibilities.\n"
+            "- Never fabricate employment, certifications, dates, metrics, or responsibilities.\n"
             "- Do not put meta labels or disclaimers such as 'Suggestion for verification only' or 'Needs verification' anywhere in returned resume fields.\n\n"
             + prompt
         )
+        prompt += _enhancement_prompt(enhancement_gaps or [])
 
         system = (
             "You are an expert resume tailor. Rewrite the resume to align with the "
-            "job description using the JD's exact vocabulary. Do NOT invent experience, "
-            "skills, or facts not present in the original resume. Only reformulate, "
+            "job description using the JD's exact vocabulary. Do NOT invent experience "
+            "or facts not present in the original resume. Adjacent, realistically learnable "
+            "JD skills may be added to the Skills section only when the prompt permits it; "
+            "never present them as professional experience. Only reformulate, "
             "reframe, and reorder existing content. If something is missing, map to "
             "the closest truthful concept. Preserve all relevant truthful keywords and evidence from the source resume; omission of relevant evidence is not allowed. Never turn speculative suggestions into main resume facts."
         )
@@ -1052,7 +1134,9 @@ async def _tailor_impl(base_resume_id: str, job_id: str | None, job_description_
             db.refresh(tailored)
             tailored_id = str(tailored.id)
             # Optional: chain a score against the newly tailored CV.
-            chain_depth = _resolve_chain_score_depth(db)
+            # A refreshed Report requires Full scoring. Normal tailoring keeps
+            # the user's existing chain-score preference unchanged.
+            chain_depth = "full" if enhancement_gaps else _resolve_chain_score_depth(db)
         finally:
             db.close()
 
@@ -1299,7 +1383,7 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
         raise HTTPException(status_code=422, detail="Could not extract enough text from PDF. It may be image-based.")
 
     # Use LLM to parse extracted text into structured resume JSON
-    schema_example = '{"header":{"name":"","contact_items":[{"text":"location"},{"text":"email","url":"mailto:email"},{"text":"LinkedIn","url":"linkedin.com/in/..."},{"text":"phone"}]},"summary":"","experience":[{"company":"","title":"","location":"","date":"","description":"","bullets":[]}],"skills":{},"education":[{"school":"","location":"","degree":"","start_date":"YYYY-MM","end_date":"YYYY-MM"}],"projects":[],"publications":[]}'
+    schema_example = '{"header":{"name":"","contact_items":[{"text":"location"},{"text":"email","url":"mailto:email"},{"text":"LinkedIn","url":"linkedin.com/in/..."},{"text":"phone"}]},"summary":"","experience":[{"company":"","title":"","location":"","date":"","description":"","bullets":[]}],"skills":{},"education":[{"school":"","location":"","degree":"","start_date":"YYYY-MM","end_date":"YYYY-MM"}],"certifications":[{"name":"","date":"YYYY-MM","issuer":""}],"projects":[],"publications":[]}'
 
     system_prompt = "You are a resume parser. Extract structured data from resume text. Return ONLY valid JSON, no markdown fences."
     user_prompt = (
@@ -1322,7 +1406,7 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
             # truncates the JSON mid-string. Give the local parser enough room,
             # then retry once with a compact prompt if the model still emits
             # malformed JSON.
-            _resp = await call_llm(prompt=user_prompt, system=system_prompt, max_tokens=5000)
+            _resp = await call_llm(prompt=user_prompt, system=system_prompt, max_tokens=5000, operation="text")
             _tracker.record(_resp)
             raw_response = _resp["text"]
 
@@ -1341,7 +1425,7 @@ async def parse_resume_pdf(pdf_bytes: bytes, db: Session) -> dict:
                              "Do not use markdown, comments, or trailing text. Preserve facts; "
                              "use empty arrays/strings for missing fields.\n\n" + schema_example +
                              "\n\nResume text:\n" + extracted_text[:30000])
-            _resp = await call_llm(prompt=repair_prompt, system=system_prompt, max_tokens=5000)
+            _resp = await call_llm(prompt=repair_prompt, system=system_prompt, max_tokens=5000, operation="text")
             raw_response = _resp["text"]
             cleaned = raw_response.strip()
             if cleaned.startswith("```"):

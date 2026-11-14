@@ -146,7 +146,8 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                     jobs.append({"title": title, "url": job_url,
                                  "location": primary or None,
                                  "locations": places,
-                                 "arrangement": (req.get("WorkplaceType") or "").strip() or None})
+                                 "arrangement": (req.get("WorkplaceType") or "").strip() or None,
+                                 "posted_at": req.get("PostedDate")})
                 elif debug:
                     rejected.append({"title": title, "url": job_url, "selector": "oracle_hcm_api", "reason": reason})
 

@@ -285,6 +285,22 @@ ul.bullets li {
   </div>
   {% endif %}
 
+  <!-- Certifications -->
+  {% if certifications %}
+  <div class="section">
+    <div class="section-title">Certifications</div>
+    {% for cert in certifications %}
+    <div class="edu-entry">
+      <div class="edu-row">
+        <span class="edu-school">{{ cert.name }}</span>
+        <span class="edu-location">{{ cert.date|month_year }}</span>
+      </div>
+      {% if cert.issuer %}<div class="edu-row"><span class="edu-degree">{{ cert.issuer }}</span></div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <!-- Projects -->
   {% if projects %}
   <div class="section">

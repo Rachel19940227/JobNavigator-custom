@@ -174,6 +174,9 @@ def _make_key(job_type: str, scope_key: Optional[str] = None) -> str:
 _run_failure: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "jn_run_failure", default=None
 )
+_run_warning: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "jn_run_warning", default=None
+)
 
 
 # A DBAPI error string carries the failed statement, its bound parameters and
@@ -203,9 +206,21 @@ def mark_run_failed(reason: str) -> None:
         _run_failure.set(str(reason)[:MAX_RUN_ERROR_CHARS])
 
 
+def mark_run_warning(reason: str) -> None:
+    """Mark a successful run as needing attention without reporting a failure."""
+    if reason:
+        _run_warning.set(str(reason)[:MAX_RUN_ERROR_CHARS])
+
+
 def _take_run_failure() -> Optional[str]:
     reason = _run_failure.get()
     _run_failure.set(None)
+    return reason
+
+
+def _take_run_warning() -> Optional[str]:
+    reason = _run_warning.get()
+    _run_warning.set(None)
     return reason
 
 
@@ -352,10 +367,15 @@ async def tracked_run(
 
     try:
         _run_failure.set(None)
+        _run_warning.set(None)
         yield running_job
         reason = _take_run_failure()
-        _finish_job_run(run_id, "failed" if reason else "completed",
-                        running_job.summary, reason)
+        warning = _take_run_warning()
+        summary = running_job.summary
+        if warning:
+            summary = f"{summary} — Warning: {warning}" if summary else f"Warning: {warning}"
+        _finish_job_run(run_id, "failed" if reason else "warning" if warning else "completed",
+                        summary, reason)
     except Exception as e:
         _finish_job_run(run_id, "failed", None, str(e))
         raise
@@ -393,6 +413,7 @@ def launch_background(
     async def _wrapper():
         try:
             _run_failure.set(None)
+            _run_warning.set(None)
             # The gate is taken here, before the worker runs, so a queued task
             # holds nothing but itself — no DB connection, no LLM slot.
             limiter = limiter_for_job_type(job_type)
@@ -405,7 +426,10 @@ def launch_background(
             summary = result.strip() if isinstance(result, str) and result.strip() else None
             # …but it may also have reported a failure it handled itself.
             reason = _take_run_failure()
-            _finish_job_run(run_id, "failed" if reason else "completed", summary, reason)
+            warning = _take_run_warning()
+            if warning:
+                summary = f"{summary} — Warning: {warning}" if summary else f"Warning: {warning}"
+            _finish_job_run(run_id, "failed" if reason else "warning" if warning else "completed", summary, reason)
         except Exception as e:
             logger.error(f"Background job {job_type} failed: {e}")
             _finish_job_run(run_id, "failed", None, str(e))

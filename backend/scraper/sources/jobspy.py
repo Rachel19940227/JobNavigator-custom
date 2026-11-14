@@ -1,5 +1,6 @@
 """JobSpy-backed keyword search source — searches LinkedIn, Indeed, ZipRecruiter, Google Jobs via a single multi-board request."""
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -10,11 +11,32 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.models.db import SessionLocal, Search, Job, Setting, get_existing_external_ids
-from backend.scraper._shared.dedup import make_external_id, make_content_hash
+from backend.models.db import Application, SessionLocal, Search, Job, Setting, get_existing_external_ids
+from backend.scraper._shared.dedup import (
+    find_duplicate_posting,
+    get_recent_applied_content_hashes,
+    make_external_id,
+    make_content_hash,
+)
 
 logger = logging.getLogger("jobnavigator.scraper.sources.jobspy")
 _PRECISE_LINKEDIN_POSTED_AT = {}
+
+
+def _description_fingerprint(description: str | None) -> str:
+    """Stable full-JD fingerprint; layout-only whitespace changes do not mint a new posting."""
+    normalized = re.sub(r"\s+", " ", description or "").strip().lower()
+    return hashlib.sha256(normalized.encode()).hexdigest() if normalized else ""
+
+
+def _applied_posting_fingerprints(db) -> set[tuple[str, str]]:
+    """Company/title + full-JD fingerprints for jobs already in the application funnel."""
+    rows = (db.query(Job.content_hash, Job.description)
+            .join(Application, Application.job_id == Job.id)
+            .filter(Job.content_hash.isnot(None), Job.description.isnot(None))
+            .all())
+    return {(content_hash, fingerprint) for content_hash, description in rows
+            if (fingerprint := _description_fingerprint(description))}
 
 
 def _patch_linkedin_new_date_class():
@@ -322,6 +344,8 @@ def _run_sync(search, proxy_url: str = None) -> dict:
         h1b_loop = _asyncio.new_event_loop()
         try:
             existing_ids = get_existing_external_ids(db)
+            applied_fingerprints = _applied_posting_fingerprints(db)
+            recent_applied_hashes = get_recent_applied_content_hashes(db)
             existing_posted = dict(db.query(Job.external_id, Job.posted_at).all())
             company_lookup = build_company_lookup(db)
             phrases = load_exclusion_phrases(db)
@@ -351,8 +375,21 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                     continue
 
                 content_hash = make_content_hash(company, title)
-
+                description = _clean(row.get("description"))
                 site = str(row.get("site", "")).lower()
+                if site == "linkedin" and content_hash in recent_applied_hashes:
+                    logger.info(
+                        "Skipping recently applied LinkedIn duplicate: %s @ %s (%s)",
+                        title, company, url,
+                    )
+                    continue
+                if (content_hash, _description_fingerprint(description)) in applied_fingerprints:
+                    logger.info(
+                        "Skipping already-applied duplicate: %s @ %s (%s)",
+                        title, company, url,
+                    )
+                    continue
+
                 source_map = {
                     "linkedin": "jobspy_linkedin",
                     "indeed": "jobspy_indeed",
@@ -369,7 +406,7 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                     url=url,
                     source=source,
                     search_id=search.id,
-                    description=_clean(row.get("description")),
+                    description=description,
                     location=_clean(row.get("location")),
                     # JobSpy's own `is_remote` is a substring test over the whole
                     # description, so "remote state" (Terraform) and "remote dev
@@ -413,6 +450,14 @@ def _run_sync(search, proxy_url: str = None) -> dict:
                     apply_location_to_job(job)
                 except Exception as analysis_err:
                     logger.warning(f"Inline salary analysis failed for {title}: {analysis_err}")
+
+                duplicate = find_duplicate_posting(db, job)
+                if duplicate:
+                    logger.info(
+                        "Skipping duplicate posting: %s @ %s (%s duplicates %s)",
+                        title, company, url, duplicate.url,
+                    )
+                    continue
 
                 if job.h1b_jd_flag:
                     _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"

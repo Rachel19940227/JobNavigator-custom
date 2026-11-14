@@ -247,6 +247,7 @@ export default function V2JobFeed() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [addJobOpen, setAddJobOpen] = useState(false)
+  const [editJobId, setEditJobId] = useState(null)
   const [addJobUrl, setAddJobUrl] = useState('')
   const [addJobMode, setAddJobMode] = useState('url')
   const [addJobTitle, setAddJobTitle] = useState('')
@@ -259,6 +260,8 @@ export default function V2JobFeed() {
   const [rescoreOpts, setRescoreOpts] = useState([])
   const [rescoreSel, setRescoreSel] = useState([])
   const [rescoreDepth, setRescoreDepth] = useState('full')
+  const [gapReviewOpen, setGapReviewOpen] = useState(false)
+  const [gapReview, setGapReview] = useState({})
   const scoreWatchRef = useRef([])
   const pendingRef = useRef({})   // {jobId:{title,company}} → completion toast
   const seenActiveRef = useRef(new Map())   // jobId → Set(op types) confirmed in-flight (avoids first-tick false completion)
@@ -398,13 +401,37 @@ export default function V2JobFeed() {
   }, [buildParams, pushToast])
   useEffect(() => { fetchJobs() }, [fetchJobs])
 
+  const openEditJob = useCallback(async (job) => {
+    setRowMenu(null); setHeadMenu(false); setAddJobError('')
+    try {
+      const { data } = await api.get(`/jobs/${job.id}`)
+      setEditJobId(data.id)
+      setAddJobMode('text')
+      setAddJobTitle(data.title || '')
+      setAddJobCompany(data.company || '')
+      setAddJobLocation(data.location || '')
+      setAddJobUrl(data.url || '')
+      setAddJobDescription(data.description || '')
+      setAddJobOpen(true)
+    } catch (e) { pushToast({ kind: 'error', msg: `Could not load "${job.title}" for editing.` }) }
+  }, [pushToast])
+
   const addJobFromUrl = useCallback(async () => {
     const url = addJobUrl.trim()
     if (addingJob) return
+    if (editJobId && !addJobDescription.trim()) return
     if (addJobMode === 'url' && !url) return
     if (addJobMode === 'text' && (!addJobTitle.trim() || !addJobDescription.trim())) return
     setAddingJob(true); setAddJobError('')
     try {
+      if (editJobId) {
+        const { data: job } = await api.patch(`/jobs/${editJobId}`, { description: addJobDescription.trim() })
+        setJobs((prev) => prev.map((j) => j.id === job.id ? { ...j, ...job } : j))
+        setDetail((cur) => cur?.id === job.id ? { ...cur, ...job } : cur)
+        setAddJobOpen(false); setEditJobId(null)
+        pushToast({ kind: 'success', msg: 'Job description updated. Run Rescore and re-tailor the résumé to use the new text.' })
+        return
+      }
       const payload = addJobMode === 'url' ? { url } : { title: addJobTitle.trim(), company: addJobCompany.trim(), location: addJobLocation.trim(), description: addJobDescription.trim(), url }
       const { data: job } = await api.post(addJobMode === 'url' ? '/jobs/import-url' : '/jobs/create-manual', payload)
       setAddJobOpen(false); setAddJobUrl('')
@@ -416,7 +443,7 @@ export default function V2JobFeed() {
     } catch (e) {
       setAddJobError(e.response?.data?.detail || e.message || 'Could not import this job')
     } finally { setAddingJob(false) }
-  }, [addJobUrl, addJobMode, addJobTitle, addJobCompany, addJobLocation, addJobDescription, addingJob, pushToast, refreshStats])
+  }, [addJobUrl, addJobMode, addJobTitle, addJobCompany, addJobLocation, addJobDescription, addingJob, editJobId, pushToast, refreshStats])
 
   // append next page (infinite scroll + refill after triage drains the list)
   const offsetRef = useRef(offset); useEffect(() => { offsetRef.current = offset }, [offset])
@@ -556,6 +583,7 @@ export default function V2JobFeed() {
   }, [pushToast, fetchJobs, refreshStats])
   const saveJob = async (j) => { const willSave = !j.saved, ps = j.status, pv = j.saved; if (willSave && scoredCount(j) === 0) watchForScore(j.id); if (await patchRemote(j, { saved: willSave, status: willSave ? 'saved' : 'new' })) showUndo(j, ps, pv, `${willSave ? 'Saved' : 'Unsaved'} "${j.title}"`) }
   const skipJob = async (j) => { const ps = j.status, pv = j.saved; if (await patchRemote(j, { status: 'skip' })) showUndo(j, ps, pv, `Skipped "${j.title}"`) }
+  const restoreJob = async (j) => { const ps = j.status, pv = j.saved; if (await patchRemote(j, { status: 'new', saved: false })) showUndo(j, ps, pv, `Restored "${j.title}" to New`) }
   const applyJob = async (j) => {
     const ps = j.status, pv = j.saved
     const res = await patchRemote(j, { status: 'applied' })
@@ -623,16 +651,15 @@ export default function V2JobFeed() {
     try {
       const [rz, st] = await Promise.all([api.get('/resumes?is_base=true'), api.get('/settings')])
       const opts = (rz.data || []).map((r) => ({ id: r.id, name: r.name, note: 'base' }))
-      if (personaAvailable) opts.push({ id: 'persona', name: 'Persona', note: 'from Persona' })
       setRescoreOpts(opts)
-      const def = st.data?.default_resume_id
-      setRescoreSel(def && opts.some((o) => o.id === def) ? [def] : opts.map((o) => o.id))
+      const defaults = Array.isArray(st.data?.default_resume_ids) ? st.data.default_resume_ids : []
+      setRescoreSel(defaults.filter((id) => opts.some((o) => o.id === id)))
       const depth = st.data?.scoring_default_depth === 'full' ? 'full' : 'light'
       setDefaultDepth(depth)
       setRescoreDepth(preferDepth || depth)
     // this list IS the modal — an empty body with a dead Score button would explain nothing
     } catch (e) { console.error(e); setRescoreOpts([]); setRescoreSel([]); pushToast({ kind: 'error', msg: 'Could not load your résumés — nothing to score against.' }) }
-  }, [personaAvailable, defaultDepth, pushToast])
+  }, [defaultDepth, pushToast])
   const openRescore = useCallback((job, preferDepth) => { setRescoreJob({ verb: scoredCount(job) > 0 ? 'Rescore' : 'Score', title: job.title, company: job.company, jobs: [job] }); loadRescoreOpts(preferDepth) }, [loadRescoreOpts])
   const runRescore = useCallback(async () => {
     const target = rescoreJob
@@ -983,6 +1010,37 @@ export default function V2JobFeed() {
   const best = reports[0]
   const active = reports[Math.min(reportTab, Math.max(0, reports.length - 1))]
   const rpt = active?.rpt
+  const gapItems = [
+    ...(rpt?.experience_gaps || []).map((gap, index) => ({ key: `experience:${index}`, gap })),
+    ...(rpt?.potential_concerns || []).map((gap, index) => ({ key: `concern:${index}`, gap })),
+  ]
+  const selectedGapCount = gapItems.filter((item) => gapReview[item.key]?.selected).length
+  useEffect(() => { setGapReviewOpen(false); setGapReview({}) }, [d?.id, active?.name])
+  const runGapEnhancement = async () => {
+    if (!d || !active || !selectedGapCount || dAct.tailoring) return
+    const baseId = active.tailored
+      ? d.tailored_resume_id
+      : resumes.find((resume) => resume.name === active.name)?.id
+    if (!baseId) {
+      pushToast({ kind: 'error', msg: 'Could not find the résumé used for this report.' })
+      return
+    }
+    const enhancementGaps = gapItems.filter((item) => gapReview[item.key]?.selected).map((item) => ({
+      gap: item.gap,
+      fact: (gapReview[item.key]?.fact || '').trim(),
+    }))
+    pendingRef.current[d.id] = { title: d.title, company: d.company, op: 'tailor' }
+    pushToast({ kind: 'progress', msg: `Re-tailoring "${d.title}" from ${selectedGapCount} confirmed gap${selectedGapCount === 1 ? '' : 's'}…` })
+    try {
+      await api.post('/resumes/tailor', { base_resume_id: baseId, job_id: d.id, enhancement_gaps: enhancementGaps })
+      markFlight(d.id, TAILOR, { base_name: active.name, replaces: !!d.tailored_resume_id, enhanced: true })
+      setGapReviewOpen(false); setGapReview({})
+    } catch (e) {
+      delete pendingRef.current[d.id]
+      pushToast({ kind: 'error', msg: `Re-tailoring failed for "${d.title}"` })
+      console.error('gap re-tailor failed', e.response?.data?.detail || e.message)
+    }
+  }
   const reqRows = rpt?.requirement_mapping || []
   const reqMet = reqRows.filter((r) => r.matched).length
   const coverage = rpt?.keyword_coverage_pct
@@ -1020,7 +1078,7 @@ export default function V2JobFeed() {
           <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--muted)', ...headStyle }}>{head ? `${head.total} open roles · ${head.arrived} arrived today · ${head.unscored} not yet scored` : loadError ? DASH : NBSP}</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Button onClick={() => { setAddJobError(''); setAddJobOpen(true) }}>+ Add job</Button>
+          <Button onClick={() => { setEditJobId(null); setAddJobError(''); setAddJobOpen(true) }}>+ Add job</Button>
           {head && head.unscored > 0 && <Button variant="ai" onClick={openRescoreBulk} title="Pick résumés + depth, then score every unscored job" style={headStyle}>Score {head.unscored} unscored jobs</Button>}
         </div>
       </HeaderRow>
@@ -1319,7 +1377,7 @@ export default function V2JobFeed() {
                       {/* ui: keep — v2-rail-cell glyph cells (♥ / ✕ / ⋯); rail text is out of scope for this step */}
                       {/* the heart carries the saved state itself, so the control the user clicked answers immediately */}
                       <div className="v2-rail-save v2-rail-cell" title={j.saved ? 'Unsave (s)' : 'Save (s)'} onClick={() => saveJob(j)} style={{ flex: 1, fontSize: 11, color: j.saved ? 'var(--accent)' : 'var(--text-2)', borderBottom: '1px solid var(--line-soft)' }}>♥</div>
-                      <div className="v2-rail-skip v2-rail-cell" title="Skip (x)" onClick={() => skipJob(j)} style={{ flex: 1, fontSize: 11, color: 'var(--muted)', borderBottom: '1px solid var(--line-soft)' }}>✕</div>
+                      <div className="v2-rail-skip v2-rail-cell" title={isIgnored ? 'Restore to New' : 'Skip (x)'} onClick={() => isIgnored ? restoreJob(j) : skipJob(j)} style={{ flex: 1, fontSize: isIgnored ? 13 : 11, color: isIgnored ? 'var(--accent)' : 'var(--muted)', borderBottom: '1px solid var(--line-soft)' }}>{isIgnored ? '↩' : '✕'}</div>
                       <div className="v2-rail-copy v2-rail-cell" title="More" onClick={(ev) => {
                         if (rowMenu?.id === j.id) { setRowMenu(null); return }
                         const r = ev.currentTarget.getBoundingClientRect()
@@ -1330,6 +1388,8 @@ export default function V2JobFeed() {
                         <>
                           <div onClick={() => setRowMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 59 }} />
                           <Menu ariaLabel="Job actions" style={{ position: 'fixed', left: rowMenu.left, top: rowMenu.top, bottom: rowMenu.bottom, zIndex: 60, width: 228 }}>
+                            {isIgnored && <MenuItem onClick={() => { setRowMenu(null); restoreJob(j) }}>Restore to New</MenuItem>}
+                            <MenuItem onClick={() => openEditJob(j)}>Edit job description</MenuItem>
                             {[['Mark applied', 'a', () => applyJob(j)], ['Tailor résumé', 't', () => setPicker({ mode: 'tailor', jobs: [j] })], ['Rescore', 'r', () => openRescore(j)], ['Open posting ↗', 'e', () => j.url && window.open(j.url, '_blank', 'noopener,noreferrer')]].map(([label, key, act]) => (
                               <MenuItem key={label} hint={key} hintMono onClick={() => { setRowMenu(null); act() }}
                                 style={label === 'Tailor résumé' ? { fontWeight: 600 } : undefined}>{label}</MenuItem>
@@ -1419,6 +1479,8 @@ export default function V2JobFeed() {
                         <>
                           <div onClick={() => setHeadMenu(false)} style={{ position: 'fixed', inset: 0, zIndex: 44 }} />
                           <Menu ariaLabel="Job actions" style={{ position: 'absolute', top: '100%', right: 0, zIndex: 45, marginTop: 5, width: 236 }}>
+                            {d.status === 'ignored' && <MenuItem onClick={() => { setHeadMenu(false); restoreJob(d) }}>Restore to New</MenuItem>}
+                            <MenuItem onClick={() => openEditJob(d)}>Edit job description</MenuItem>
                             {[
                               // hidden while a tailor is already running: it would queue a second
                               // run against the copy this one is about to write
@@ -1602,8 +1664,31 @@ export default function V2JobFeed() {
                         {((rpt?.experience_gaps || []).length > 0 || (rpt?.potential_concerns || []).length > 0) && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '11px 13px', border: '1px solid var(--warn)', borderRadius: 'var(--radius-cell)', background: 'var(--warn-soft)' }}>
                             <Label style={{ color: 'var(--warn)' }}>Experience gaps & concerns</Label>
-                            {[...(rpt.experience_gaps || []), ...(rpt.potential_concerns || [])].map((item, k) =>
-                              <div key={k} style={{ display: 'flex', gap: 9, fontSize: 12.5, lineHeight: '18px', color: 'var(--text-2)' }}><span style={{ color: 'var(--warn)' }}>!</span><span>{item}</span></div>)}
+                            {!gapReviewOpen && gapItems.map((item) =>
+                              <div key={item.key} style={{ display: 'flex', gap: 9, fontSize: 12.5, lineHeight: '18px', color: 'var(--text-2)' }}><span style={{ color: 'var(--warn)' }}>!</span><span>{item.gap}</span></div>)}
+                            {!gapReviewOpen ? (
+                              <Button variant="secondary" size="xs" onClick={() => setGapReviewOpen(true)} style={{ alignSelf: 'flex-start', marginTop: 5 }}>Review Gaps &amp; Re-Tailor</Button>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 3 }}>
+                                {gapItems.map((item) => {
+                                  const value = gapReview[item.key] || { selected: false, fact: '' }
+                                  return (
+                                    <div key={item.key} style={{ display: 'flex', flexDirection: 'column', gap: 7, padding: '9px 10px', border: '1px solid var(--edge)', borderRadius: 'var(--radius-cell)', background: 'var(--surface)' }}>
+                                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, fontSize: 12.5, lineHeight: '18px', color: 'var(--text-2)' }}>
+                                        <UICheck checked={value.selected} ariaLabel={`Confirm ${item.gap}`} title="I have this capability" style={{ flex: '0 0 auto', marginTop: 1 }} onChange={() => setGapReview((prev) => ({ ...prev, [item.key]: { ...value, selected: !value.selected } }))} />
+                                        <span>{item.gap}</span>
+                                      </div>
+                                      {value.selected && <textarea value={value.fact} onChange={(e) => setGapReview((prev) => ({ ...prev, [item.key]: { ...value, fact: e.target.value } }))} placeholder="Additional experience (optional) — 中文或 English" aria-label={`Additional experience for ${item.gap}`} rows={3} style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '8px 10px', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-field)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: 12.5, lineHeight: '18px', fontFamily: 'inherit' }} />}
+                                    </div>
+                                  )
+                                })}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <Button variant="secondary" size="xs" onClick={() => { setGapReviewOpen(false); setGapReview({}) }}>Cancel</Button>
+                                  <Button variant="ai" size="xs" onClick={runGapEnhancement} disabled={!selectedGapCount || dAct.tailoring} style={{ marginLeft: 'auto' }}>{dAct.tailoring ? 'Re-tailoring…' : 'Re-Tailor & Re-score'}</Button>
+                                </div>
+                                <Helper>Checked items with experience become targeted résumé evidence. Checked items without experience add skills only. Re-scoring runs once at Full depth.</Helper>
+                              </div>
+                            )}
                           </div>
                         )}
                         {rpt?.ats_tip && (
@@ -1847,22 +1932,22 @@ export default function V2JobFeed() {
       )}
 
       {addJobOpen && (
-        <ModalPanel width={520} title="Add job" onClose={() => !addingJob && setAddJobOpen(false)} zIndex={70}>
+        <ModalPanel width={520} title={editJobId ? 'Edit job description' : 'Add job'} onClose={() => !addingJob && setAddJobOpen(false)} zIndex={70}>
           <HeaderRow align="stretch" pad="20px 24px 14px" style={{ flexDirection: 'column', gap: 5 }}>
-            <Label>Add job</Label>
-            <Heading size={19} className="v2-dialogtitle">Add a job manually</Heading>
-            <Helper>Paste a link, or enter details when the employer page blocks scraping.</Helper>
+            <Label>{editJobId ? 'Edit job' : 'Add job'}</Label>
+            <Heading size={19} className="v2-dialogtitle">{editJobId ? 'Replace the job description' : 'Add a job manually'}</Heading>
+            <Helper>{editJobId ? 'Use the full posting text when the captured page is a CAPTCHA or interstitial. Existing scores remain until you run Rescore.' : 'Paste a link, or enter details when the employer page blocks scraping.'}</Helper>
           </HeaderRow>
           <div style={{ padding: '18px 24px' }}>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}><Button size="sm" variant={addJobMode === 'url' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('url')}>Job link</Button><Button size="sm" variant={addJobMode === 'text' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('text')}>Job details text</Button></div>
+            {!editJobId && <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}><Button size="sm" variant={addJobMode === 'url' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('url')}>Job link</Button><Button size="sm" variant={addJobMode === 'text' ? 'primary' : 'secondary'} onClick={() => setAddJobMode('text')}>Job details text</Button></div>}
             {addJobMode === 'url' ? <Input autoFocus type="url" value={addJobUrl} onChange={setAddJobUrl}
               placeholder="https://company.example/jobs/123" ariaLabel="Job URL" invalid={!!addJobError}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addJobFromUrl() } }} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}><Input autoFocus value={addJobTitle} onChange={setAddJobTitle} placeholder="Job title" ariaLabel="Job title" /><Input value={addJobCompany} onChange={setAddJobCompany} placeholder="Company (optional)" ariaLabel="Company" /><Input value={addJobLocation} onChange={setAddJobLocation} placeholder="Location (optional)" ariaLabel="Location" /><Input value={addJobUrl} onChange={setAddJobUrl} placeholder="Original job URL (optional)" ariaLabel="Original job URL" /><textarea value={addJobDescription} onChange={(e) => setAddJobDescription(e.target.value)} placeholder="Paste the full job description, requirements, responsibilities and skills" aria-label="Job description" rows={9} style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '9px 11px', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-field)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit' }} /></div>}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addJobFromUrl() } }} /> : <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}><Input autoFocus={!editJobId} value={addJobTitle} onChange={setAddJobTitle} placeholder="Job title" ariaLabel="Job title" disabled={!!editJobId} /><Input value={addJobCompany} onChange={setAddJobCompany} placeholder="Company (optional)" ariaLabel="Company" disabled={!!editJobId} /><Input value={addJobLocation} onChange={setAddJobLocation} placeholder="Location (optional)" ariaLabel="Location" disabled={!!editJobId} /><Input value={addJobUrl} onChange={setAddJobUrl} placeholder="Original job URL (optional)" ariaLabel="Original job URL" disabled={!!editJobId} /><textarea autoFocus={!!editJobId} value={addJobDescription} onChange={(e) => setAddJobDescription(e.target.value)} placeholder="Paste the full job description, requirements, responsibilities and skills" aria-label="Job description" rows={9} style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '9px 11px', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-field)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: 13, fontFamily: 'inherit' }} /></div>}
             {addJobError && <Helper style={{ color: 'var(--bad)', marginTop: 7 }}>{addJobError}</Helper>}
           </div>
           <FooterRow variant="wide">
             <Button variant="secondary" size="sm" onClick={() => setAddJobOpen(false)} disabled={addingJob} style={{ marginLeft: 'auto' }}>Cancel</Button>
-            <Button size="sm" onClick={addJobFromUrl} disabled={addingJob || (addJobMode === 'url' ? !addJobUrl.trim() : (!addJobTitle.trim() || !addJobDescription.trim()))}>{addingJob ? <><Spinner size={11} color="currentColor" /> Adding…</> : 'Add job'}</Button>
+            <Button size="sm" onClick={addJobFromUrl} disabled={addingJob || (editJobId ? !addJobDescription.trim() : (addJobMode === 'url' ? !addJobUrl.trim() : (!addJobTitle.trim() || !addJobDescription.trim())))}>{addingJob ? <><Spinner size={11} color="currentColor" /> {editJobId ? 'Saving…' : 'Adding…'}</> : editJobId ? 'Save changes' : 'Add job'}</Button>
           </FooterRow>
         </ModalPanel>
       )}

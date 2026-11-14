@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.models.db import SessionLocal, Job, Search, Setting, get_existing_external_ids
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
+from backend.scraper._shared.dates import parse_posted_at
 
 logger = logging.getLogger("jobnavigator.linkedin")
 
@@ -574,6 +575,7 @@ async def _scrape_page_with_clicks(page, seen_ids: set, collection_name: str) ->
 
             company = ""
             location = ""
+            posted_at = None
             card_li = await link.evaluate_handle("el => el.closest('li')")
             card_el = card_li.as_element() if card_li else None
             if card_el:
@@ -589,6 +591,12 @@ async def _scrape_page_with_clicks(page, seen_ids: set, collection_name: str) ->
                         location = (await el.inner_text()).strip()
                         if location:
                             break
+                date_el = await card_el.query_selector('time[datetime], time')
+                if date_el:
+                    posted_at = (
+                        await date_el.get_attribute("datetime")
+                        or await date_el.inner_text()
+                    )
 
             # --- Click card to load detail panel ---
             try:
@@ -634,6 +642,7 @@ async def _scrape_page_with_clicks(page, seen_ids: set, collection_name: str) ->
                 "job_id": job_id,
                 "collection": collection_name,
                 "description": description,
+                "posted_at": parse_posted_at(posted_at),
                 "salary_text": salary_info["salary_text"],
                 "salary_min": salary_info["salary_min"],
                 "salary_max": salary_info["salary_max"],
@@ -823,6 +832,7 @@ async def run(search: Search) -> dict:
                     search_id=search.id,
                     location=j.get("location") or None,
                     description=j.get("description") or None,
+                    posted_at=j.get("posted_at"),
                     status="new",
                     seen=False,
                     saved=False,

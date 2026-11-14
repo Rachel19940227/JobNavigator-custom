@@ -131,7 +131,8 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                 jobs.append({"title": title, "url": job_url,
                              "location": job_loc or None,
                              "locations": [x for x in ([job_loc] + secondary) if x],
-                             "arrangement": posting.get("workplaceType") or None})
+                             "arrangement": posting.get("workplaceType") or None,
+                             "posted_at": posting.get("publishedAt")})
             elif debug:
                 rejected.append({"title": title, "url": job_url, "selector": "ashby_api", "reason": reason})
 

@@ -368,11 +368,20 @@ def scan_jd_for_h1b_flags(description: str, exclusion_phrases: list) -> dict:
     if not description:
         return {"jd_flag": False, "jd_snippet": None, "matched_phrase": None}
 
-    desc_lower = description.lower()
-
     for phrase in exclusion_phrases:
-        if phrase.lower() in desc_lower:
-            idx = desc_lower.index(phrase.lower())
+        phrase = str(phrase or "").strip()
+        if not phrase:
+            continue
+        # Treat configured phrases as complete words/phrases.  The old raw
+        # substring check made "co-op"/"coop" match ordinary words such as
+        # "co-operative", "cooperatively", and "cooperation".
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9])" + re.escape(phrase) + r"(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        match = pattern.search(description)
+        if match:
+            idx = match.start()
             start = max(0, idx - 50)
             end = min(len(description), idx + len(phrase) + 50)
             snippet = description[start:end].strip()
@@ -439,5 +448,4 @@ async def check_job_h1b(job: Job, db, company_lookup: dict = None, phrases: list
     job._h1b_matched_phrase = jd_result["matched_phrase"]
 
     job.h1b_verdict = determine_h1b_verdict(lca_count, jd_result["jd_flag"])
-
 

@@ -13,6 +13,7 @@ from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.browser import _get_browser, _new_page, _close_page
 from backend.scraper._shared.urls import _clean_application_url
 from backend.scraper._shared.filters import _apply_company_filters
+from backend.scraper._shared.dates import parse_posted_at
 
 logger = logging.getLogger("jobnavigator.playwright")
 
@@ -526,6 +527,7 @@ async def run(search: Search) -> dict:
                     search_id=search.id,
                     location=j.get("location") or None,
                     description=j.get("description") or None,
+                    posted_at=parse_posted_at(j.get("date_posted")),
                     status="new",
                     seen=False,
                     saved=False,

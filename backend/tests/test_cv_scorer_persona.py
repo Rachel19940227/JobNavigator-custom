@@ -1,4 +1,4 @@
-"""Persona-as-virtual-Resume scoring helpers."""
+"""Persona is available to tailoring, but excluded from résumé scoring."""
 import pytest
 from backend.models.db import Persona
 from backend.analyzer import cv_scorer
@@ -49,12 +49,12 @@ def _seed_resume(db, name="PM"):
     return r
 
 
-def test_get_resume_texts_includes_persona_when_populated(test_db):
+def test_get_resume_texts_excludes_persona_when_populated(test_db):
     _seed_resume(test_db, "PM")
     _seed_persona(test_db)
     out = cv_scorer._get_resume_texts(test_db)
     assert "PM" in out
-    assert "Persona" in out
+    assert "Persona" not in out
 
 
 def test_get_resume_texts_omits_persona_when_empty(test_db):
@@ -70,17 +70,18 @@ def test_get_default_resume_persona_id(test_db):
     test_db.add(Setting(key="default_resume_id", value="persona"))
     test_db.commit()
     out = cv_scorer._get_default_resume(test_db)
-    assert list(out.keys()) == ["Persona"]
+    assert out == {}
 
 
 def test_get_resume_texts_for_company_persona_in_selection(test_db):
     r = _seed_resume(test_db, "PM")
     _seed_persona(test_db)
+    test_db.add(Setting(key="default_resume_ids", value=f'["{r.id}"]'))
     company = Company(id=uuid.uuid4(), name="Acme", selected_resume_ids=["persona"])
     test_db.add(company)
     test_db.commit()
     out = cv_scorer._get_resume_texts_for_company(test_db, company)
-    assert list(out.keys()) == ["Persona"]
+    assert list(out.keys()) == ["PM"]
 
 
 def test_get_resume_texts_for_company_mixed_selection(test_db):
@@ -92,16 +93,14 @@ def test_get_resume_texts_for_company_mixed_selection(test_db):
     test_db.commit()
     out = cv_scorer._get_resume_texts_for_company(test_db, company)
     assert "PM" in out
-    assert "Persona" in out
+    assert "Persona" not in out
 
 
-from unittest.mock import patch, AsyncMock
 from backend.models.db import Job
 
 
 @pytest.mark.asyncio
-async def test_score_single_job_persona_id_uses_persona_text(test_db, monkeypatch):
-    """score_single_job(cv_ids=['persona']) flattens persona.resume_content into the LLM call."""
+async def test_score_single_job_persona_id_is_rejected_as_scoring_source(test_db, monkeypatch):
     job = Job(id=uuid.uuid4(), title="PM", company="Acme",
               external_id="ext-persona-test",
               description="Looking for a PM with FinTech experience")
@@ -110,12 +109,13 @@ async def test_score_single_job_persona_id_uses_persona_text(test_db, monkeypatc
     test_db.commit()
     job_id = str(job.id)
 
-    captured = {}
+    called = False
 
     async def fake_score_job_sync(job_obj, cv_texts, db=None, depth="full", preloaded_text=None,
                                   model_override=None):
-        captured["cv_texts"] = cv_texts
-        return {"Persona": {"score": 80, "summary": "Good fit"}}
+        nonlocal called
+        called = True
+        return {}
 
     monkeypatch.setattr("backend.analyzer.cv_scorer.score_job_sync", fake_score_job_sync)
     # score_single_job reads the text off the row (no session held for a fetch),
@@ -123,7 +123,7 @@ async def test_score_single_job_persona_id_uses_persona_text(test_db, monkeypatc
     monkeypatch.setattr("backend.analyzer.cv_scorer._job_text_from_row",
                         lambda job: "JD text")
 
-    await cv_scorer.score_single_job(job_id, cv_ids=["persona"], depth="full")
+    result = await cv_scorer.score_single_job(job_id, cv_ids=["persona"], depth="full")
 
-    assert "Persona" in captured["cv_texts"]
-    assert "Strong FinTech PM" in captured["cv_texts"]["Persona"]
+    assert result == "No resumes to score against"
+    assert called is False

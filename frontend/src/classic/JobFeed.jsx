@@ -849,22 +849,14 @@ export default function JobFeed() {
     setRescoring(false)
     setRescoreDepth('full')
     try {
-      const [resumesRes, personaRes, settingsRes] = await Promise.all([
+      const [resumesRes, settingsRes] = await Promise.all([
         api.get('/resumes?is_base=true'),
-        api.get('/persona').catch(() => ({ data: null })),
         api.get('/settings'),
       ])
       const opts = (resumesRes.data || []).map(r => ({ id: r.id, name: r.name }))
-      const personaContent = personaRes.data?.resume_content || {}
-      const personaPopulated = Object.keys(personaContent).length > 0
-      if (personaPopulated) opts.push({ id: 'persona', name: 'Persona' })
       setRescoreOptions(opts)
-      const defaultId = settingsRes.data?.default_resume_id
-      if (defaultId && opts.some(o => o.id === defaultId)) {
-        setSelectedRescoreIds([defaultId])
-      } else {
-        setSelectedRescoreIds(opts.map(o => o.id))
-      }
+      const defaults = Array.isArray(settingsRes.data?.default_resume_ids) ? settingsRes.data.default_resume_ids : []
+      setSelectedRescoreIds(defaults.filter(id => opts.some(o => o.id === id)))
     } catch (err) { console.error(err) }
   }
 

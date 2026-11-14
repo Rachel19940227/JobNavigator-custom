@@ -113,7 +113,8 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                     jobs.append({"title": title, "url": job_url,
                                  "location": (p.get("location") or "").strip() or None,
                                  "locations": _locations_of(p),
-                                 "arrangement": _arrangement_of(p)})
+                                 "arrangement": _arrangement_of(p),
+                                 "posted_at": p.get("posted_date")})
                 elif debug:
                     rejected.append({"title": title, "url": job_url,
                                      "selector": "amazon_json", "reason": reason})

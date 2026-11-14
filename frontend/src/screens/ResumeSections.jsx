@@ -19,14 +19,15 @@ export const kb = (fn, role = 'button') => ({
   role,
   onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(e) } },
 })
-export const EMPTY = { header: { name: '', contact_items: [] }, summary: '', experience: [], skills: {}, education: [], projects: [], publications: [] }
-export const SECTION_ORDER = ['Header', 'Summary', 'Experience', 'Skills', 'Education', 'Projects', 'Publications']
+export const EMPTY = { header: { name: '', contact_items: [] }, summary: '', experience: [], skills: {}, education: [], certifications: [], projects: [], publications: [] }
+export const SECTION_ORDER = ['Header', 'Summary', 'Experience', 'Skills', 'Education', 'Certifications', 'Projects', 'Publications']
 
 // Section counts for the collapsed header, from whichever sections exist.
 export const sectionCounts = (data) => ({
   Experience: data.experience?.length || 0,
   Skills: Object.keys(data.skills || {}).length,
   Education: data.education?.length || 0,
+  Certifications: data.certifications?.length || 0,
   Projects: data.projects?.length || 0,
   Publications: data.publications?.length || 0,
 })
@@ -150,6 +151,7 @@ export function SectionEditor({ name, data, setField, mutate, baseData, emptyNot
     case 'Experience': return <ExperienceEditor emptyNote={emptyNote} data={data} setField={setField} mutate={mutate} baseExp={baseData?.experience} onRemoved={onRemoved} />
     case 'Skills': return <SkillsEditor emptyNote={emptyNote} data={data} mutate={mutate} baseSkills={baseData?.skills} onError={onError} onRemoved={onRemoved} />
     case 'Education': return <EducationEditor emptyNote={emptyNote} data={data} setField={setField} mutate={mutate} onRemoved={onRemoved} />
+    case 'Certifications': return <CertificationsEditor emptyNote={emptyNote} data={data} setField={setField} mutate={mutate} onRemoved={onRemoved} />
     case 'Projects': return <ProjectsEditor emptyNote={emptyNote} data={data} setField={setField} mutate={mutate} onRemoved={onRemoved} />
     case 'Publications': return <PublicationsEditor emptyNote={emptyNote} data={data} setField={setField} mutate={mutate} onRemoved={onRemoved} />
     default: return null
@@ -393,6 +395,27 @@ export function EducationEditor({ emptyNote, data, setField, mutate, onRemoved }
       ))}
       {(data.education || []).length === 0 && <EmptyState note={emptyNote} what="education" />}
       <DashedAdd big onClick={() => mutate((d) => { d.education = d.education || []; d.education.push({ school: '', location: '', degree: '', start_date: '', end_date: '' }) })}>+ Add education</DashedAdd>
+    </div>
+  )
+}
+export function CertificationsEditor({ emptyNote, data, setField, mutate, onRemoved }) {
+  const undoRemove = useUndoRemove(mutate, onRemoved)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 9, paddingTop: 10 }}>
+      {(data.certifications || []).map((cert, i) => (
+        <Card key={i} style={{ padding: 11, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <MicroField label="Certificate name" value={cert.name} onChange={(v) => setField(`certifications.${i}.name`, v)} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+            <MicroField label="Issuing organization" value={cert.issuer} onChange={(v) => setField(`certifications.${i}.issuer`, v)} />
+            <MicroField type="month" label="Date obtained" value={cert.date} onChange={(v) => setField(`certifications.${i}.date`, v)} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}><RemoveLink onClick={() => undoRemove('Removed certification',
+            (d) => d.certifications.splice(i, 1),
+            (d) => { d.certifications = d.certifications || []; d.certifications.splice(i, 0, cert) })} /></div>
+        </Card>
+      ))}
+      {(data.certifications || []).length === 0 && <EmptyState note={emptyNote} what="certifications" />}
+      <DashedAdd big onClick={() => mutate((d) => { d.certifications = d.certifications || []; d.certifications.push({ name: '', date: '', issuer: '' }) })}>+ Add certification</DashedAdd>
     </div>
   )
 }

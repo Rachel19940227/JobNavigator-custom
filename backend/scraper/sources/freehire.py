@@ -17,6 +17,7 @@ from backend.models.db import (
 )
 from backend.scraper._shared.dedup import make_external_id, make_content_hash
 from backend.scraper._shared.filters import build_search_exclude_sets
+from backend.scraper._shared.dates import parse_posted_at
 from backend.scraper._shared.analysis import analyze_inline
 
 logger = logging.getLogger("jobnavigator.freehire")
@@ -185,6 +186,7 @@ async def run(search: Search) -> dict:
                     search_id=search.id,
                     location=j.get("location") or None,
                     description=j.get("description") or None,
+                    posted_at=parse_posted_at(j.get("posted")),
                     status="new",
                     seen=False,
                     saved=False,

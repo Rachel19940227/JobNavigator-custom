@@ -58,6 +58,7 @@ GARBAGE_TITLES = {
     "accessibility", "equal opportunity", "eeo", "privacy policy",
     "terms of use", "terms and conditions", "sitemap",
     "careers blog", "my profile", "my account", "my applications",
+    "view profile", "show more options",
     "locations", "teams", "departments", "categories",
 }
 
@@ -161,10 +162,10 @@ def match_title_expr(expr: str, title: str) -> bool:
 
 # ── Job validation ────────────────────────────────────────────────────────────
 
-def _validate_job(title: str, url: str) -> str | None:
+def _validate_job(title: str, url: str, structural: bool = False) -> str | None:
     """Validate a scraped job entry. Returns None if valid, or rejection reason."""
-    if not title or len(title.strip()) < 10:
-        return f"Title too short ({len((title or '').strip())} chars)"
+    if not title:
+        return "Title is empty"
     title_clean = title.strip()
     title_lower = title_clean.lower()
     if title_lower in GARBAGE_TITLES:
@@ -174,6 +175,10 @@ def _validate_job(title: str, url: str) -> str | None:
             return f"Garbage substring: '{sub}'"
     if title_lower in _LOCALE_NAMES:
         return "Locale/language name"
+    # Short real titles such as "Planner" are safe only when the link came
+    # from a board's structural job selector, not a broad anchor scan.
+    if len(title_clean) < 10 and not structural:
+        return f"Title too short ({len(title_clean)} chars)"
     if re.match(r'^[\d\s\-\.]+$', title_clean):
         return "Title is just numbers/symbols"
 

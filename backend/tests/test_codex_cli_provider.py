@@ -105,6 +105,39 @@ async def test_tailoring_uses_codex_and_preserves_operation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cover_letter_uses_its_own_codex_operation(monkeypatch):
+    L = configure(monkeypatch)
+    monkeypatch.setattr(L, "resolve_llm_config", lambda feature: {
+        "provider": "codex_cli", "model": "gpt-6-astra", "api_key": "",
+    })
+    payload = {"greeting": "Dear Team,", "body_paragraphs": ["Body."],
+               "closing": "Sincerely,", "signature": "Candidate"}
+    seen = []
+
+    async def ok(operation, prompt, *args):
+        seen.append((operation, prompt))
+        return {"text": json.dumps(payload), "usage": {}}
+
+    monkeypatch.setattr(L, "_call_codex_runner", ok)
+    result = await L.call_cover_letter_llm(
+        "LETTER PROMPT", "system", 1500, cached_prefix="RESUME PREFIX")
+
+    assert seen == [("cover_letter", "RESUME PREFIX\n\nLETTER PROMPT")]
+    assert result["actual_provider"] == "codex_cli"
+
+
+def test_cover_letter_codex_schema_accepts_letter_and_rejects_empty_body():
+    from backend.analyzer.codex_gateway import validate_result, CodexProviderError
+
+    valid = {"greeting": "Dear Team,", "body_paragraphs": ["Body."],
+             "closing": "Sincerely,", "signature": ""}
+    assert validate_result("cover_letter", valid) == valid
+
+    with pytest.raises(CodexProviderError, match="non-empty|should be non-empty"):
+        validate_result("cover_letter", {**valid, "body_paragraphs": [""]})
+
+
+@pytest.mark.asyncio
 async def test_openai_api_key_cannot_route_codex_to_openai(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-used")
     L = configure(monkeypatch)

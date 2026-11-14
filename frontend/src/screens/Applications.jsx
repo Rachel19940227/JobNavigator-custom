@@ -33,10 +33,10 @@ const fmtSalary = (lo, hi) => {
 }
 
 const srcLabel = (v) => ({
-  direct: 'a company scrape', manual: 'the Log application form', jobright: 'Jobright.ai', levels_fyi: 'Levels.fyi',
+  direct: 'Company Search', playwright_direct: 'Company Search', manual: 'Manual', jobright: 'Jobright.ai', levels_fyi: 'Levels.fyi',
   linkedin_personal: 'LinkedIn Personal', linkedin_extension: 'the LinkedIn extension',
   extension: 'the extension', freehire: 'freehire.me',
-}[v] || (v ? v.replace(/^jobspy_/, '').replace(/_/g, ' ') : 'the Job Feed'))
+}[v] || (v?.startsWith('jobspy_') ? `JobSpy · ${v.slice(7).replace(/_/g, ' ')}` : (v ? v.replace(/_/g, ' ') : 'Unknown')))
 
 // Dots read the shared --stage-* tokens (theme.css), not generic --warn/--good/--bad,
 // so a stage is the same colour here, in the Stats funnel, and on the Sankey nodes.
@@ -89,8 +89,9 @@ export default function Applications() {
   const [sel, setSel] = useState(null)
   const [query, setQuery] = useState('')
   const [companies, setCompanies] = useState([])
+  const [sources, setSources] = useState([])
   const [sortBy, setSortBy] = useState('recent')
-  const [openFlt, setOpenFlt] = useState(null)     // null | 'company' | 'sort'
+  const [openFlt, setOpenFlt] = useState(null)     // null | 'company' | 'source' | 'sort'
   const [closed, setClosed] = useState({ rejected: true })
   const [menuOpen, setMenuOpen] = useState(false)
   const [intForm, setIntForm] = useState(false)
@@ -208,10 +209,22 @@ export default function Applications() {
     }
   }, [apps])
 
+  // Values come from the jobs actually returned by the API; labels are only a
+  // presentation detail. New ingestion sources therefore appear automatically.
+  const sourceOpts = useMemo(() => {
+    const counts = new Map()
+    apps.forEach((a) => {
+      const value = a.source || ''
+      counts.set(value, (counts.get(value) || 0) + 1)
+    })
+    return [...counts.entries()].sort((a, b) => srcLabel(a[0]).localeCompare(srcLabel(b[0])))
+  }, [apps])
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     let out = apps.filter((a) => {
       if (companies.length && !companies.includes(companyOf(a))) return false
+      if (sources.length && !sources.includes(a.source || '')) return false
       if (!q) return true
       return `${a.title || ''} ${companyOf(a)}`.toLowerCase().includes(q)
     })
@@ -222,7 +235,7 @@ export default function Applications() {
       company: (x, y) => companyOf(x).localeCompare(companyOf(y)) || byName(x, y),
     }[sortBy]
     return [...out].sort(cmp)
-  }, [apps, query, companies, sortBy])
+  }, [apps, query, companies, sources, sortBy])
 
   const d = apps.find((a) => a.id === sel) || null
 
@@ -474,6 +487,27 @@ export default function Applications() {
                   </MenuItem>
                 )
               }))}
+            </Menu>
+          )}
+        </span>
+
+        <span style={{ position: 'relative', flex: '0 0 auto', display: 'flex' }} onClick={(e) => e.stopPropagation()}>
+          <Pill on={openFlt === 'source' || !!sources.length} ariaExpanded={openFlt === 'source'} ariaHaspopup="menu"
+            onClick={() => setOpenFlt(openFlt === 'source' ? null : 'source')}>
+            Source{sources.length ? ` · ${sources.length}` : ''}<span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>
+          </Pill>
+          {openFlt === 'source' && (
+            <Menu ariaLabel="Filter by source" className="v2-scroll" onDismiss={() => setOpenFlt(null)} style={{ ...POPOVER, left: 0, marginTop: 5, width: 220, maxHeight: 340, overflow: 'auto' }}>
+              {sourceOpts.map(([value, count]) => {
+                const on = sources.includes(value)
+                return (
+                  <MenuItem key={value || '__unknown__'} hint={count} hintMono
+                    onClick={() => setSources((p) => on ? p.filter((x) => x !== value) : [...p, value])}
+                    icon={<Check checked={on} />}>
+                    {srcLabel(value)}
+                  </MenuItem>
+                )
+              })}
             </Menu>
           )}
         </span>

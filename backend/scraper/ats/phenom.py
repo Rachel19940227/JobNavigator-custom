@@ -142,7 +142,8 @@ async def scrape(raw_url: str, debug: bool = False) -> list[dict] | tuple:
                     jobs.append({"title": title, "url": job_url,
                                  "location": _location_of(j),
                                  "locations": _locations_of(j),
-                                 "arrangement": _arrangement_of(j)})
+                                 "arrangement": _arrangement_of(j),
+                                 "posted_at": j.get("postedDate") or j.get("datePosted")})
                 elif debug:
                     rejected.append({"title": title, "url": job_url, "selector": "phenom_api", "reason": reason})
 

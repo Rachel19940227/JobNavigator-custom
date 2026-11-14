@@ -82,6 +82,21 @@ def test_validate_job_accepts_real_job():
     assert reason is None
 
 
+@pytest.mark.parametrize("title", ["Planner", "Analyst", "Manager"])
+def test_validate_job_accepts_short_title_with_structural_evidence(title):
+    from backend.scraper._shared.filters import _validate_job
+    assert _validate_job(title, "https://example.com/job/123", structural=True) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Home", "Search", "Login", "English", "Français", "View Profile", "Show More Options"],
+)
+def test_validate_job_rejects_navigation_even_with_structural_evidence(title):
+    from backend.scraper._shared.filters import _validate_job
+    assert _validate_job(title, "https://example.com/job/123", structural=True) is not None
+
+
 def test_apply_company_filters_include_expr():
     from backend.scraper._shared.filters import _apply_company_filters
 

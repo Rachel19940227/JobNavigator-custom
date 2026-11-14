@@ -1,5 +1,6 @@
 """Tests for _shared/dedup.py — external_id + content_hash stability."""
 import pytest
+from datetime import datetime, timedelta, timezone
 
 
 def test_make_external_id_stable_across_tracking_params():
@@ -73,3 +74,24 @@ def test_default_tracking_params_includes_utm():
     from backend.scraper._shared.dedup import _DEFAULT_TRACKING_PARAMS
     assert "utm_source" in _DEFAULT_TRACKING_PARAMS
     assert "utm_medium" in _DEFAULT_TRACKING_PARAMS
+
+
+def test_recent_applied_content_hashes_uses_90_day_window(test_db):
+    from backend.models.db import Application, Job
+    from backend.scraper._shared.dedup import get_recent_applied_content_hashes
+
+    recent = Job(external_id="recent-ext", content_hash="recent-hash",
+                 company="Capco", title="Business Analyst Consultant")
+    old = Job(external_id="old-ext", content_hash="old-hash",
+              company="Acme", title="Business Analyst")
+    never_applied = Job(external_id="new-ext", content_hash="new-hash",
+                        company="Beta", title="Business Analyst")
+    test_db.add_all([recent, old, never_applied])
+    test_db.flush()
+    test_db.add_all([
+        Application(job_id=recent.id, applied_at=datetime.now(timezone.utc) - timedelta(days=6)),
+        Application(job_id=old.id, applied_at=datetime.now(timezone.utc) - timedelta(days=91)),
+    ])
+    test_db.commit()
+
+    assert get_recent_applied_content_hashes(test_db) == {"recent-hash"}

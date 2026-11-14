@@ -395,7 +395,7 @@ class JobRun(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     job_type = Column(String, nullable=False)          # scrape_all, email_check, etc.
     trigger = Column(String, nullable=False)            # scheduler | manual
-    status = Column(String, nullable=False, default="running")  # running | completed | failed
+    status = Column(String, nullable=False, default="running")  # running | completed | warning | failed
     started_at = Column(DateTime(timezone=True), default=utcnow)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     duration_seconds = Column(Float, nullable=True)

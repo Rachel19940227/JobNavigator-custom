@@ -179,7 +179,16 @@ async def run_all_scrapes():
             logger.info("Running all scrapes...")
             started = datetime.now(timezone.utc)
             from backend.scraper.orchestrator import run_all
-            await run_all()
+            outcome = await run_all() or {}
+            company_outcome = outcome.get("companies") or {}
+            failure_count = company_outcome.get("failed", 0) + len(outcome.get("search_failures") or [])
+            warnings = (outcome.get("search_warnings") or []) + (company_outcome.get("warnings") or [])
+            if failure_count:
+                from backend.job_monitor import mark_run_failed
+                mark_run_failed(f"{failure_count} source(s) failed")
+            elif warnings:
+                from backend.job_monitor import mark_run_warning
+                mark_run_warning("; ".join(warnings[:8]))
             # CV scoring happens per-search/company based on their auto_scoring_depth setting
             # Also score any saved-but-unscored jobs (from manual saves)
             from backend.analyzer.cv_scorer import analyze_unscored_jobs

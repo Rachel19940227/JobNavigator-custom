@@ -259,6 +259,21 @@ def test_seed_companies_bails_when_any_company_exists(test_db):
     assert [c.name for c in test_db.query(Company).all()] == ["MyOwnCo"]
 
 
+def test_seed_government_companies_preserves_existing_configuration(test_db):
+    existing = Company(name="City of Ottawa", scrape_urls=["https://custom.example/jobs"], active=True)
+    empty = Company(name="City of Mississauga", scrape_urls=[], active=False)
+    test_db.add_all([existing, empty])
+    test_db.commit()
+
+    seed.seed_government_companies(test_db)
+    test_db.refresh(existing); test_db.refresh(empty)
+    assert existing.scrape_urls == ["https://custom.example/jobs"]
+    assert existing.active is True
+    assert empty.scrape_urls == ["https://jobs.mississauga.ca/viewalljobs/"]
+    names = {c.name for c in test_db.query(Company).all()}
+    assert {c["name"] for c in seed.GOVERNMENT_COMPANIES}.issubset(names)
+
+
 # ══ seed_h1b_slugs ══════════════════════════════════════════════════════════
 
 
@@ -730,7 +745,14 @@ def test_run_seeds_brings_an_empty_database_up(test_db):
     # The one-shot secret is generated, not left at its seeded empty value.
     assert len(settings["telegram_webhook_secret"]) >= 32
 
-    assert test_db.query(Company).count() == len(seed.SEED_COMPANIES)
+    expected_companies = {
+        c["name"] for c in (
+            seed.SEED_COMPANIES
+            + seed.GOVERNMENT_COMPANIES
+            + seed.DIRECT_CAREER_COMPANIES
+        )
+    }
+    assert {c.name for c in test_db.query(Company).all()} == expected_companies
     assert {s.search_mode for s in test_db.query(Search).all()} == \
         {s["search_mode"] for s in seed.SEED_SEARCHES}
     assert test_db.query(Resume).filter(Resume.name == "Sample PM").count() == 1
@@ -752,6 +774,32 @@ def test_run_seeds_is_idempotent(test_db):
     assert test_db.query(Setting).filter(
         Setting.key == "telegram_webhook_secret").one().value == secret
     assert test_db.query(Resume).filter(Resume.name == "Sample PM").one().id == resume_id
-    assert test_db.query(Company).count() == len(seed.SEED_COMPANIES)
+    expected_companies = {
+        c["name"] for c in (
+            seed.SEED_COMPANIES
+            + seed.GOVERNMENT_COMPANIES
+            + seed.DIRECT_CAREER_COMPANIES
+        )
+    }
+    assert {c.name for c in test_db.query(Company).all()} == expected_companies
     assert test_db.query(Search).count() == len(seed.SEED_SEARCHES)
     assert test_db.query(Persona).count() == 1
+
+
+def test_direct_company_seed_fills_only_empty_urls(test_db):
+    empty = Company(name="Hydro One", scrape_urls=[], active=False)
+    custom = Company(
+        name="Unity Health Toronto",
+        scrape_urls=["https://custom.example/jobs"],
+        active=True,
+    )
+    test_db.add_all([empty, custom])
+    test_db.commit()
+
+    seed.seed_direct_career_companies(test_db)
+    seed.seed_direct_career_companies(test_db)
+
+    assert empty.scrape_urls == ["https://jobs.hydroone.com/search/"]
+    assert custom.scrape_urls == ["https://custom.example/jobs"]
+    assert custom.active is True
+    assert test_db.query(Company).filter(Company.name == "Hydro One").count() == 1

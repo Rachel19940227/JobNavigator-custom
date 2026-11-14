@@ -186,3 +186,5 @@ docker-compose.override.yml
 
 # local backlog
 BACKLOG.md
+
+.DS_Store

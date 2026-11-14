@@ -1,4 +1,6 @@
 """Tests for /api/searches guards on the built-in extension searches ("Extension"/"Extension LI" have no scraper; the v2 UI hides Run/Test/Delete for them, and PATCH stays allowed)."""
+import asyncio
+
 import pytest
 
 
@@ -92,6 +94,12 @@ def _stub_jobspy(monkeypatch, titles):
     monkeypatch.setattr(jobspy, "scrape_jobs", lambda **kwargs: df)
 
 
+def _run_keyword_preview(search_id, db):
+    """Exercise preview filtering directly; the HTTP endpoint now starts it asynchronously."""
+    from backend.api.routes_searches import test_search
+    return asyncio.run(test_search(search_id, db=db))
+
+
 def test_preview_applies_global_title_exclude(api_client, test_db, monkeypatch):
     _seed_first_run(test_db)
     _seed_global_exclude(test_db, ["intern", "marketing"])
@@ -102,9 +110,7 @@ def test_preview_applies_global_title_exclude(api_client, test_db, monkeypatch):
         "Staff Technical Product Marketing Manager",
     ])
 
-    resp = api_client.post(f"/api/searches/{sid}/test")
-    assert resp.status_code == 200, f"Unexpected {resp.status_code}: {resp.text}"
-    d = resp.json()
+    d = _run_keyword_preview(sid, test_db)
 
     assert d["raw_count"] == 3
     # only the row that no list touches survives
@@ -136,7 +142,7 @@ def test_preview_global_exclude_is_word_bounded_and_optional(api_client, test_db
     # "Internal Communications Manager" contains "intern" only as a substring; the filter is word-bounded.
     _stub_jobspy(monkeypatch, ["Internal Communications Manager"])
 
-    d = api_client.post(f"/api/searches/{sid}/test").json()
+    d = _run_keyword_preview(sid, test_db)
     assert d["global_excluded_count"] == 0
     assert d["jobs"][0]["kept"] is True
 
@@ -148,7 +154,7 @@ def test_preview_per_search_exclude_still_wins_its_own_label(api_client, test_db
     sid = _mk_keyword_search(test_db, title_exclude_keywords=["senior"])
     _stub_jobspy(monkeypatch, ["Senior Program Manager"])
 
-    d = api_client.post(f"/api/searches/{sid}/test").json()
+    d = _run_keyword_preview(sid, test_db)
     j = d["jobs"][0]
     assert j["kept"] is False
     assert j["reason"] == "Excluded by: senior"

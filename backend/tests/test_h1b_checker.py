@@ -55,6 +55,30 @@ def test_scan_jd_for_h1b_flags_case_insensitive():
     assert result["jd_flag"] is True
 
 
+@pytest.mark.parametrize("text", [
+    "Works cooperatively with colleagues.",
+    "Builds co-operative relationships with partners.",
+    "Strong cooperation across departments.",
+])
+def test_scan_jd_exclusion_phrase_does_not_match_inside_larger_word(text):
+    from backend.analyzer.h1b_checker import scan_jd_for_h1b_flags
+
+    result = scan_jd_for_h1b_flags(text, ["co-op", "coop"])
+
+    assert result["jd_flag"] is False
+
+
+def test_scan_jd_exclusion_phrase_still_matches_complete_phrase():
+    from backend.analyzer.h1b_checker import scan_jd_for_h1b_flags
+
+    result = scan_jd_for_h1b_flags(
+        "This is a co-op student position for the winter term.",
+        ["co-op student"],
+    )
+
+    assert result["jd_flag"] is True
+
+
 # ── determine_h1b_verdict (5-branch logic) ───────────────────────────────────
 
 def test_determine_h1b_verdict_likely():

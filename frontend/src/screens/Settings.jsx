@@ -163,7 +163,6 @@ export default function Settings() {
   const [S, setS] = useState(null)            // settings map
   const [defaults, setDefaults] = useState({})
   const [resumes, setResumes] = useState([])
-  const [personaAvailable, setPersonaAvailable] = useState(false)
   const [query, setQuery] = useState('')
   const [backendVersion, setBackendVersion] = useState('')  // from /health; the colophon notes it only when it differs from this build
   useEffect(() => {
@@ -245,7 +244,6 @@ export default function Settings() {
     () => load(),
     // This is the Default résumé picker's entire option list — empty, it looks like a setting with nothing to choose.
     () => api.get('/resumes', { params: { is_base: true } }).then(({ data }) => setResumes(data || [])).catch((e) => { console.error(e); flash('Could not load your résumés — the default-résumé picker is empty', true) }),
-    () => api.get('/persona').then(({ data }) => setPersonaAvailable(Object.keys(data?.resume_content || {}).length > 0)).catch(() => { /* silent: Persona is one optional entry in that picker */ }),
     () => api.get('/linkedin/session').then(({ data }) => setLi(data)).catch(() => { /* silent: the LinkedIn row reads “unknown” and its own actions report their failures */ }),
     () => api.get('/llm/codex-status').then(({ data }) => setCodexStatus(data)).catch(() => setCodexStatus({ codex: { reachable: false }, ollama: { reachable: false } })),
   ])
@@ -308,6 +306,7 @@ export default function Settings() {
   // ── row builders ──
   const B = (label, help, key, o = {}) => ({ kind: 'box', label, help, key, ...o })
   const SEL = (label, help, key, options, o = {}) => ({ kind: 'select', label, help, key, options, ...o })
+  const MULTI = (label, help, key, options, o = {}) => ({ kind: 'multicheck', label, help, key, options, ...o })
   const SW = (label, help, offHelp, key, o = {}) => ({ kind: 'switch', label, help, offHelp, key, ...o })
   const E = (label, help, key, o = {}) => ({ kind: 'edit', label, help, key, ...o })
   const BT = (label, help, btnLabel, act, o = {}) => ({ kind: 'button', label, help, btnLabel, act, ...o })
@@ -333,9 +332,7 @@ export default function Settings() {
 
   const sections = useMemo(() => {
     if (!S) return []
-    const resumeOpts = [['', '(all bases + Persona)'],
-      ...(personaAvailable ? [['persona', 'Persona']] : []),
-      ...resumes.map((r) => [r.id, r.name])]
+    const resumeOpts = resumes.map((r) => [r.id, r.name])
 
     // Default voice must name a preset id, so offer exactly those rather than a free-text box you can typo.
     // A stored id no longer in presets is kept as an option so the row doesn't silently read as unset.
@@ -374,7 +371,7 @@ export default function Settings() {
           info: 'Add models that are not in the built-in list. Search uses the provider’s catalog for OpenRouter, OpenAI and Claude. For Ollama, type the local model name. Removed models stay removed.' },
       ]],
       ['scoring', '', 'Scoring behavior', '', [
-        SEL('Default résumé', 'Used when a company has no résumés of its own selected.', 'default_resume_id', resumeOpts, { w: '260px' }),
+        MULTI('Résumés used for scoring', 'Only checked base résumés participate when a company has no résumés of its own selected.', 'default_resume_ids', resumeOpts),
         B('Max parallel jobs', 'Extra requests wait in a queue to limit database load.', 'scoring_max_concurrent', { mono: true, int: true, w: '135px' }),
         SEL('Default depth', 'Used when neither the company nor the search sets its own.', 'scoring_default_depth',
           [['light', 'Light — score only'], ['full', 'Full — score + keywords + report']], { w: '260px', dflt: 'light',
@@ -496,7 +493,7 @@ export default function Settings() {
       ]],
     ]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [S, resumes, personaAvailable, trig, li, codexStatus])
+  }, [S, resumes, trig, li, codexStatus])
 
   const q = query.trim().toLowerCase()
   const matches = (sec) => !q || sec[2].toLowerCase().includes(q) ||
@@ -638,6 +635,15 @@ function Row({ r, ctx }) {
           ariaLabel={r.label} int={r.int} cron={r.cron} onInvalid={(m) => flash(m, true)} />
       case 'select':
         return <Select value={val(r.key, r.dflt)} options={r.options} onPick={(v) => save(r.key, v)} width={r.w} ariaLabel={r.label} />
+      case 'multicheck': {
+        const selected = Array.isArray(val(r.key, [])) ? val(r.key, []) : []
+        return <div style={{ display: 'grid', gap: 7, minWidth: 300 }}>
+          {r.options.length ? r.options.map(([id, label]) => <label key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={selected.includes(id)} onChange={(e) => save(r.key, e.target.checked ? [...selected, id] : selected.filter((x) => x !== id))} />
+            <span>{label}</span>
+          </label>) : <Helper>No base résumés available.</Helper>}
+        </div>
+      }
       // Local-only rows: the theme store is the value, so these read/write it directly instead of going through `save`.
       // Own components so the subscription doesn't drag into the sections useMemo.
       case 'appearance':

@@ -12,9 +12,10 @@ from backend.models.db import (
 from backend.scraper._shared.browser import _get_browser, _new_page, _close_page
 from backend.scraper._shared.filters import _apply_company_filters
 from backend.scraper._shared.dedup import make_external_id, make_content_hash, _normalize_url
+from backend.scraper._shared.dates import parse_posted_at
 from backend.scraper.ats import (
     workday, greenhouse, lever, ashby, oracle_hcm,
-    phenom, talentbrew, rippling, smartrecruiters, meta, google, amazon, generic,
+    phenom, talentbrew, rippling, smartrecruiters, meta, google, amazon, icims, generic,
 )
 from backend.scraper.ats._descriptions import _fetch_descriptions_parallel
 
@@ -45,6 +46,8 @@ async def _dispatch_ats(url: str, debug: bool = False, shared_browser=None, max_
         return await smartrecruiters.scrape(url, debug=debug)
     if amazon.is_amazon(url):
         return await amazon.scrape(url, debug=debug)
+    if icims.is_icims(url):
+        return await icims.scrape(url, debug=debug, max_pages=max_pages or 5)
     if meta.is_meta(url):
         return await meta.scrape(url, browser=shared_browser, max_pages=max_pages, debug=debug)
     if google.is_google(url):
@@ -63,24 +66,27 @@ def _refresh_known_jobs(db, known: dict) -> int:
     ids = list(known)
     rows = db.query(Job).filter(
         Job.external_id.in_(ids),
-        ((Job.loc_country == None) & (Job.loc_region == None) & (Job.loc_city == None))
+        (Job.posted_at == None)
+        | ((Job.loc_country == None) & (Job.loc_region == None) & (Job.loc_city == None))
         | ((Job.arr_remote == None) & (Job.arr_hybrid == None) & (Job.arr_onsite == None)),
     ).all()
     touched = 0
     for job in rows:
         j = known.get(job.external_id) or {}
         before = (job.location, job.loc_country, job.loc_region, job.loc_city,
-                  job.arr_remote, job.arr_hybrid, job.arr_onsite)
+                  job.arr_remote, job.arr_hybrid, job.arr_onsite, job.posted_at)
         try:
             if not (job.location or "").strip() and j.get("location"):
                 job.location = j["location"]
             apply_arrangement_to_job(job, structured=j.get("arrangement"))
             apply_location_to_job(job, extra=j.get("locations"))
+            if job.posted_at is None:
+                job.posted_at = parse_posted_at(j.get("posted_at") or j.get("date_posted") or j.get("posted"))
         except Exception as e:
             logger.warning(f"Refresh failed for '{job.title}': {e}")
             continue
         after = (job.location, job.loc_country, job.loc_region, job.loc_city,
-                 job.arr_remote, job.arr_hybrid, job.arr_onsite)
+                 job.arr_remote, job.arr_hybrid, job.arr_onsite, job.posted_at)
         if after != before:
             touched += 1
     return touched
@@ -108,10 +114,9 @@ def record_company_scrape_log(company_id, company_name: str, result: dict, db=No
     if own_db:
         db = SessionLocal()
     try:
-        is_warning = (
-            result.get("jobs_found", 0) == 0
-            and not result.get("error")
-        )
+        is_warning = bool(not result.get("error") and (
+            result.get("jobs_found", 0) == 0 or result.get("missing_descriptions", 0) > 0
+        ))
         log = ScrapeLog(
             source=f"playwright_{company_name}",
             company_id=company_id,
@@ -119,6 +124,7 @@ def record_company_scrape_log(company_id, company_name: str, result: dict, db=No
             new_jobs=result.get("new_jobs", 0),
             error=result.get("error"),
             is_warning=is_warning,
+            source_breakdown={"missing_descriptions": result.get("missing_descriptions", 0)},
             duration_seconds=result.get("duration", 0),
         )
         db.add(log)
@@ -138,6 +144,8 @@ def _needs_browser(urls):
                 or lever.is_lever(u) or workday.is_workday(u) or ashby.is_ashby(u)
                 or greenhouse.is_greenhouse(u) or rippling.is_rippling(u)
                 or smartrecruiters.is_smartrecruiters(u) or amazon.is_amazon(u)):
+            continue
+        if icims.is_icims(u):
             continue
         # Meta, Google, levels.fyi, or generic Playwright — needs browser
         return True
@@ -181,21 +189,18 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                         or workday.is_workday(target_url) or ashby.is_ashby(target_url)
                         or greenhouse.is_greenhouse(target_url) or rippling.is_rippling(target_url)
                         or smartrecruiters.is_smartrecruiters(target_url)
-                        or amazon.is_amazon(target_url)
+                        or amazon.is_amazon(target_url) or icims.is_icims(target_url)
                         or meta.is_meta(target_url) or google.is_google(target_url)):
                     page_jobs = await _dispatch_ats(target_url, debug=False, shared_browser=browser, max_pages=max_pages)
                 else:
-                    page = await _new_page(browser)
-                    await generic._setup_route_blocks(page)
-                    await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                    if generic._is_gojobs(target_url):
-                        await generic._prepare_gojobs_search(page)
                     wait_sel = getattr(company, 'wait_for_selector', None)
-                    await generic._wait_for_content(page, wait_sel)
-                    page_jobs = await generic._extract_all_pages(
-                        page, target_url, max_pages, wait_for_selector=wait_sel,
+                    # Keep live runs on the same navigation path as Preview.
+                    # This includes Ottawa URL canonicalisation and the classic
+                    # SuccessFactors search submission.
+                    page_jobs = await generic.scrape(
+                        target_url, browser=browser, max_pages=max_pages,
+                        wait_for_selector=wait_sel,
                     )
-                    await _close_page(page)
                 for j in page_jobs:
                     if j["url"] not in seen_urls:
                         seen_urls.add(j["url"])
@@ -281,6 +286,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                     seen=False,
                     saved=False,
                     description=desc,
+                    posted_at=parse_posted_at(j.get("posted_at") or j.get("date_posted") or j.get("posted")),
                     # Optional: an ATS handler supplies it only when its board does.
                     location=j.get("location") or None,
                 )
@@ -334,6 +340,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                     seen=False,
                     saved=False,
                     location=j.get("location") or None,
+                    posted_at=parse_posted_at(j.get("posted_at") or j.get("date_posted") or j.get("posted")),
                 )
                 try:
                     with db.begin_nested():
@@ -353,6 +360,13 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
                 comp.last_scraped_at = datetime.now(timezone.utc)
 
             db.commit()
+            kept_ids = [make_external_id(company.name, j["title"], j["url"]) for j in unique_jobs]
+            missing_descriptions = 0
+            if kept_ids:
+                missing_descriptions = db.query(Job).filter(
+                    Job.external_id.in_(kept_ids),
+                    ((Job.description == None) | (Job.description == "")),
+                ).count()
             if refreshed:
                 logger.info(f"{company.name}: location/arrangement filled on {refreshed} existing job(s)")
         finally:
@@ -368,6 +382,7 @@ async def scrape_single_career_page(company: Company, shared_browser=None,
             "jobs_found": len(unique_jobs),
             "new_jobs": new_jobs,
             "error": "; ".join(url_errors) if url_errors else None,
+            "missing_descriptions": missing_descriptions,
             "duration": duration,
         }
 
@@ -399,6 +414,7 @@ async def scrape_career_pages(force: bool = False) -> dict:
     skipped: list[dict] = []
     scraped = 0
     failed = 0
+    warnings: list[str] = []
     try:
         global_interval_row = db.query(Setting).filter(Setting.key == "scrape_interval_minutes").first()
         global_interval = int(global_interval_row.value) if global_interval_row else 60
@@ -457,6 +473,10 @@ async def scrape_career_pages(force: bool = False) -> dict:
                 scraped += 1
                 if result.get("error"):
                     failed += 1
+                elif result.get("jobs_found", 0) == 0:
+                    warnings.append(f"{company.name}: 0 jobs seen")
+                elif result.get("missing_descriptions", 0):
+                    warnings.append(f"{company.name}: {result['missing_descriptions']} missing description(s)")
 
                 logger.info(
                     f"Playwright {company.name}: found={result['jobs_found']}, new={result['new_jobs']}"
@@ -492,7 +512,7 @@ async def scrape_career_pages(force: bool = False) -> dict:
                 "Company scrapes skipped: "
                 + ", ".join(f"{s['name']} ({s['reason']})" for s in skipped)
             )
-        return {"scraped": scraped, "failed": failed, "skipped": skipped}
+        return {"scraped": scraped, "failed": failed, "warnings": warnings, "skipped": skipped}
     finally:
         if shared_browser:
             await shared_browser.close()
@@ -514,18 +534,9 @@ async def scrape_url_mode(search: Search) -> dict:
     browser = None
     try:
         pw, browser = await _get_browser()
-        page = await _new_page(browser)
-        try:
-            await generic._setup_route_blocks(page)
-
-            await page.goto(search.direct_url, wait_until="domcontentloaded", timeout=30000)
-            if generic._is_gojobs(search.direct_url):
-                await generic._prepare_gojobs_search(page)
-            await generic._wait_for_content(page)
-
-            unique_jobs = await generic._extract_all_pages(page, search.direct_url, max_pages=5)
-        finally:
-            await _close_page(page)
+        unique_jobs = await generic.scrape(
+            search.direct_url, browser=browser, max_pages=5,
+        )
 
         db = SessionLocal()
         new_jobs = 0
@@ -571,6 +582,7 @@ async def scrape_url_mode(search: Search) -> dict:
                     seen=False,
                     saved=False,
                     description=desc,
+                    posted_at=parse_posted_at(j.get("posted_at") or j.get("date_posted") or j.get("posted")),
                 )
 
                 try:

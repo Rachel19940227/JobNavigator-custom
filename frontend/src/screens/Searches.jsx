@@ -260,6 +260,7 @@ function ConfigForm({ d, set }) {
   } else if (m === 'jobright') {
     fields.push(
       <Cell key="term" label="Search term · optional" value={d.search_term} onChange={(v) => set({ search_term: v })} placeholder="Leave empty for AI recommendations" />,
+      <Cell key="loc" label="Locations · comma-separated" value={d.location} onChange={(v) => set({ location: v })} placeholder="Toronto, Ottawa, Remote" />,
       <Cell key="rw" label="Results wanted · 20–500" mono type="number" min={BOUNDS.results_wanted_jobright[0]} max={BOUNDS.results_wanted_jobright[1]} value={d.results_wanted} onChange={(v) => set({ results_wanted: v })} />,
       <Cell key="ms" label="Min score · 0–100" mono type="number" min={BOUNDS.min_fit_score[0]} max={BOUNDS.min_fit_score[1]} value={d.min_fit_score} onChange={(v) => set({ min_fit_score: v })} placeholder="0 = no filter" />,
     )

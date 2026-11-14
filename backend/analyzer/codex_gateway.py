@@ -90,8 +90,24 @@ TAILOR_SCHEMA = {
         "skills": {"type": "object", "additionalProperties": {"type": "string"}},
     },
 }
+COVER_LETTER_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["greeting", "body_paragraphs", "closing", "signature"],
+    "properties": {
+        "greeting": {"type": "string", "minLength": 1},
+        "body_paragraphs": {
+            "type": "array", "minItems": 1,
+            "items": {"type": "string", "minLength": 1},
+        },
+        "closing": {"type": "string", "minLength": 1},
+        # Empty is valid here: routes_cover_letters fills it from resume header.
+        "signature": {"type": "string"},
+    },
+}
 SCHEMAS = {"score_light": SCORE_LIGHT_SCHEMA, "score_full": SCORE_FULL_SCHEMA,
-           "resume_tailoring": TAILOR_SCHEMA}
+           "text": {"type": "object", "additionalProperties": False,
+                    "required": ["text"], "properties": {"text": {"type": "string"}}},
+           "resume_tailoring": TAILOR_SCHEMA, "cover_letter": COVER_LETTER_SCHEMA}
 _semaphore = None
 _semaphore_limit = None
 
@@ -171,7 +187,7 @@ async def call_runner(operation: str, prompt: str, system: str, max_tokens: int,
     result = payload.get("result")
     validate_result(operation, result)
     return {
-        "text": json.dumps(result, ensure_ascii=False),
+        "text": result["text"] if operation == "text" else json.dumps(result, ensure_ascii=False),
         "usage": payload.get("usage") or {"input_tokens": 0, "output_tokens": 0,
                                            "cache_read_tokens": 0, "cache_write_tokens": 0},
         "duration_ms": payload.get("duration_ms") or int((time.monotonic() - started) * 1000),

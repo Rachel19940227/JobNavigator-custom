@@ -188,6 +188,8 @@ async def run_all(force: bool = False):
 
         logger.info(f"Running {len(searches)} active searches")
         search_sweep_needed = False
+        search_failures: list[str] = []
+        search_warnings: list[str] = []
 
         for search in searches:
             # Passive-only modes (extension push endpoints) are not scheduler-driven —
@@ -211,6 +213,7 @@ async def run_all(force: bool = False):
                 logger.warning(f"Search '{search.name}' has invalid config, skipping")
                 continue
 
+            search_started_at = datetime.now(timezone.utc)
             try:
                 result = await run_search(search, proxy_url=proxy_url)
             except ValueError as e:
@@ -220,6 +223,25 @@ async def run_all(force: bool = False):
             except Exception as e:
                 logger.exception(f"Search '{search.name}' failed: {e}")
                 result = {"jobs_found": 0, "new_jobs": 0, "error": str(e), "duration": 0}
+
+            missing_descriptions = db.query(Job).filter(
+                Job.search_id == search.id,
+                Job.discovered_at >= search_started_at,
+                ((Job.description == None) | (Job.description == "")),
+            ).count()
+            result["missing_descriptions"] = missing_descriptions
+            if result.get("error"):
+                search_failures.append(f"{search.name}: {result['error']}")
+            else:
+                notes = []
+                if result.get("jobs_found", 0) == 0:
+                    notes.append("0 jobs seen")
+                if missing_descriptions:
+                    notes.append(f"{missing_descriptions} missing description(s)")
+                if source_errors(result.get("source_breakdown")):
+                    notes.append(describe_source_errors(result.get("source_breakdown")))
+                if notes:
+                    search_warnings.append(f"{search.name}: {', '.join(notes)}")
 
             # A clean run that found nothing is a warning (same rule company scrapes
             # use) so /health/entities can flag a search that quietly stopped returning results.
@@ -280,7 +302,11 @@ async def run_all(force: bool = False):
 
         # Handed to the caller so a manual run's summary can say what did not run
         # (companies with no URLs, or — scheduler only — companies not yet due).
-        return {"companies": company_summary}
+        return {
+            "companies": company_summary,
+            "search_failures": search_failures,
+            "search_warnings": search_warnings,
+        }
     finally:
         db.close()
 
@@ -306,12 +332,18 @@ async def _run_search_by_id(search_id: str, auto_score: Optional[bool] = None) -
         if not _search_mode_is_valid(search):
             return
 
+        run_started_at = datetime.now(timezone.utc)
         try:
             result = await run_search(search, proxy_url=proxy_url)
         except ValueError:
             return  # unknown mode: silent return
 
         breakdown = result.get("source_breakdown") or None
+        result["missing_descriptions"] = db.query(Job).filter(
+            Job.search_id == search.id,
+            Job.discovered_at >= run_started_at,
+            ((Job.description == None) | (Job.description == "")),
+        ).count()
         failed_sources = source_errors(breakdown)
         log = ScrapeLog(
             search_id=search.id,

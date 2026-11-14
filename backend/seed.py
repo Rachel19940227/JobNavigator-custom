@@ -8,6 +8,62 @@ from sqlalchemy import text
 logger = logging.getLogger("jobnavigator.seed")
 
 
+SCORING_RUBRIC = """Score how well this resume matches the Job Description.
+
+Score each category 0-20, total 0-100:
+
+1. SKILLS MATCH: Coverage of required/core technical skills, tools, platforms, and methodologies.
+2. EXPERIENCE LEVEL: Relevant years, seniority, scope, and complexity.
+3. DOMAIN FIT: Relevant industry/domain experience. Do not heavily penalize different industries unless the JD explicitly requires domain experience.
+4. ROLE ALIGNMENT: Similarity of actual responsibilities to the target role. Give credit for transferable experience and do not rely on job titles alone.
+5. REQUIREMENTS MET: Education, certifications, language, clearance, mandatory experience, and other explicit requirements.
+
+Scoring rules:
+
+- Prioritize MUST-HAVE/core requirements over preferred/nice-to-have qualifications.
+- Give credit for clearly equivalent or transferable experience even when different terminology is used.
+- Do not assume specific technologies, certifications, or credentials without evidence.
+- Treat "not shown" as uncertainty, not proof the candidate lacks it.
+- Use the full range: 90-100 exceptional, 80-89 strong, 70-79 good, 60-69 moderate, 50-59 borderline, <50 weak.
+- Score match to THIS job, not overall resume quality."""
+
+
+CV_TAILOR_PROMPT = """Tailor this resume to maximize ATS and recruiter match with the Job Description.
+
+Rules:
+
+- Rewrite the summary for the target role using the most important JD keywords naturally.
+- Prioritize MUST-HAVE requirements, core responsibilities, tools, technologies, and methodologies from the JD.
+- Prefer exact JD terminology when it truthfully or reasonably describes the candidate's experience.
+- Rewrite experience bullets for stronger JD alignment and impact. Preserve existing facts and metrics.
+- Reasonable transferable mappings are allowed (e.g. gathering business needs -> requirements elicitation; coordinating business testing -> UAT).
+- Keep the same number of bullets per experience entry. Reorder bullets so the most relevant appear first.
+- Do not change company names, titles, dates, locations, education, or certifications.
+- Do not fabricate employers, projects, years of experience, credentials, responsibilities, or metrics.
+- Reorder and regroup Skills to prioritize JD relevance.
+- You MAY add missing JD skills to Skills if they are adjacent to the candidate's demonstrated background and realistically learnable before an interview. Do not imply professional experience with newly added skills.
+- Use ASCII only except existing resume content. No em-dashes.
+- Preserve existing **bold** formatting. For rewritten bullets, bold at most one strongest metric, outcome, or JD-relevant capability.
+
+Suggested_bullets:
+
+- Generate 0-2 per role only for important JD gaps not covered by existing bullets.
+- These are speculative suggestions for user review and may contain plausible experience/metrics.
+- Target missing high-value JD keywords and use concise STAR-style wording.
+- Skip roles with no meaningful gap.
+
+Before returning, ensure important JD requirements are covered across Summary, Experience, and Skills where reasonably supportable, without keyword stuffing.
+
+Resume:
+{resume_json}
+
+Job Description:
+{job_description}
+
+Return ONLY:
+{"summary":"...","experience":[{"company":"unchanged","title":"unchanged","location":"unchanged","date":"unchanged","description":"unchanged or null","bullets":["..."],"suggested_bullets":["..."]}],"skills":{"category":"skills"}}"""
+
+
 DEFAULT_SETTINGS = {
     "fit_score_threshold": ("60", "Minimum fit score to trigger Telegram alert"),
     "scrape_interval_minutes": ("0", "How often the job checker runs"),
@@ -26,7 +82,8 @@ DEFAULT_SETTINGS = {
     "auto_reject_after_days": ("0", "Reject applications older than N days, 0 = disabled (used by reject job)"),
     "proxy_url": ("", "Optional rotating proxy for scraping"),
     "dashboard_api_key": ("", "Dashboard password — changeable from dashboard"),
-    "default_resume_id": ("", "Default base Resume ID used for scoring when no company-level Resumes are configured"),
+    "default_resume_id": ("", "Legacy single default Resume ID (read only for migration)"),
+    "default_resume_ids": ("[]", "Base Resume IDs used for scoring when no company-level Resumes are configured"),
     "company_exclude_global": (json.dumps([]), "Global company ignore list — applies to all searches"),
     "title_exclude_global": (json.dumps([]), "Global title exclude keywords — applies to all searches and companies"),
     "linkedin_email": ("", "LinkedIn account email for personal scrape mode"),
@@ -41,7 +98,7 @@ DEFAULT_SETTINGS = {
     "jobright_session_obtained_at": ("", "UTC ISO timestamp of the last successful Jobright login. Read-only; set by the scraper."),
     "reject_cron": ("0 4 * * *", "Auto-reject cron (min hour day month dow). Empty = disabled"),
     "backup_cron": ("0 3 * * *", "Backup cron schedule (min hour day month dow). Empty = disabled"),
-    "scoring_rubric": ("Score each resume using these criteria (each 0-20, sum to 0-100):\n1. SKILLS MATCH (weight: 20): How many required technical skills/tools does the candidate have?\n2. EXPERIENCE LEVEL (weight: 20): Does seniority/years match? (entry-level resume for senior role = low)\n3. DOMAIN FIT (weight: 20): Has the candidate worked in the same industry/domain?\n4. ROLE ALIGNMENT (weight: 20): Does the candidate's career trajectory match this role type?\n5. REQUIREMENTS MET (weight: 20): Does the candidate meet stated requirements (education, certs, clearance)?\n\nUse the FULL 0-100 range. 90+ = perfect match. 50-70 = decent with gaps. Below 30 = poor match.\nAvoid clustering scores — differentiate meaningfully between resumes and jobs.", "Editable resume scoring rubric"),
+    "scoring_rubric": (SCORING_RUBRIC, "Editable resume scoring rubric"),
     "scoring_output_light": ('Return ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME"\n}', "Light scoring output schema"),
     "scoring_output_full": ('Classify job_category as exactly one of: Business Analyst, Project, Product, Data, Software Development, IT Support, Testing / QA.\nReturn ONLY this JSON:\n{\n  "scores": {CV_NAMES_HERE: 0-100},\n  "best_cv": "CV_NAME",\n  "job_category": "Business Analyst",\n  "breakdown": {"skills": 0-20, "experience": 0-20, "domain": 0-20, "role": 0-20, "requirements": 0-20},\n  "summary": "2-3 sentence assessment grounded only in the resumes",\n  "requirement_mapping": [\n    {"requirement": "JD requirement text", "cv_match": "matching resume evidence or null", "matched": true/false, "severity": "required or preferred"}\n  ],\n  "keyword_coverage_pct": 0-100,\n  "matched_keywords": ["matching skill"],\n  "missing_keywords": ["missing skill"],\n  "experience_gaps": ["experience gap"],\n  "potential_concerns": ["concern; never invent candidate facts"],\n  "hard_blockers": ["blocker if any"],\n  "ats_tip": "one truthful actionable suggestion"\n}', "Full scoring output schema with grounded fit analysis"),
     "llm_provider": ("ollama", "LLM provider: claude_api, claude_code, codex_cli, openai, ollama"),
@@ -150,7 +207,7 @@ DEFAULT_SETTINGS = {
     "cv_tailor_llm_provider": ("codex_cli", "LLM provider for resume tailoring"),
     "cv_tailor_llm_model": ("gpt-6-astra", "LLM model for resume tailoring"),
     "cv_tailor_llm_api_key": ("", "API key for resume tailoring LLM provider"),
-    "cv_tailor_prompt": ("Tailor this resume for the job description below.\n\nRules for MAIN bullets[]:\n- Rewrite the summary to target this specific role\n- For each experience bullet: if it benefits from JD keyword alignment, reformulate it. If it's already well-suited, leave it UNCHANGED\n- Keep the same number of bullets per experience entry - do not add or remove\n- Reorder skills to prioritize JD-relevant ones first\n- Do NOT invent new experience, skills, or facts in the main bullets. If something is missing, map to the closest truthful concept\n- NEVER add skills the candidate does not have\n- Preserve all company names, titles, dates, locations, education exactly\n- Do NOT use em-dashes or unicode special characters. Use regular hyphens (-) and ASCII only\n- Preserve **bold** formatting (double asterisks) from the original bullets. For reformulated bullets, wrap the strongest metric or achievement in **bold** (e.g. **40,000+ new clients**, **reduced error rates by 30%**). Each bullet should have at most one bold highlight\n- VERIFICATION: every reformulated bullet must trace to the original resume. If you cannot trace it, leave the original unchanged.\n\nRules for suggested_bullets[] (gap-fillers - DIFFERENT from main bullets):\n- For each experience entry, generate 1-2 PLAUSIBLE STAR-format bullets that cover JD keywords/skills no existing bullet in this role covers\n- These MAY invent realistic, believable facts/metrics that someone in this role/title at this company at this seniority would credibly have done\n- Specifically target keywords from the JD that no existing bullet mentions\n- Use STAR format: strong action verb, context, concrete (possibly invented) metric or outcome\n- The user reviews these in a diff modal and accepts/rejects each - they know suggestions are speculative gap-fillers\n- Wrap the strongest metric in **bold** (one per bullet)\n- Skip a role entirely if no JD keyword gap exists for it\n\nResume:\n{resume_json}\n\nJob Description:\n{job_description}\n\nReturn ONLY this JSON:\n{\"summary\": \"rewritten summary\", \"experience\": [{\"company\": \"unchanged\", \"title\": \"unchanged\", \"location\": \"unchanged\", \"date\": \"unchanged\", \"description\": \"unchanged or null\", \"bullets\": [\"reformulated or unchanged bullet from existing content\"], \"suggested_bullets\": [\"plausible gap-filler covering missing JD keyword\"]}], \"skills\": {\"reordered label\": \"reordered value\"}}", "Editable resume tailoring LLM prompt template"),
+    "cv_tailor_prompt": (CV_TAILOR_PROMPT, "Editable resume tailoring LLM prompt template"),
     "persona_tailor_prompt": ("Tailor a FOCUSED resume from this rich candidate profile, targeted at the job description below.\n\nThe candidate profile is a deep pool - most roles have many bullets. SELECT only the strongest aligned with the JD; drop the rest.\n\nRules for MAIN bullets[]:\n- Rewrite the summary to target this specific role (2-4 sentences, lead with the most relevant strength)\n- For each experience entry: SELECT only 3-5 bullets (max 6 for the most senior/recent role) that best match JD keywords and required skills\n- Reformulate each selected bullet to use the JD's exact vocabulary where possible\n- Reorder skills to prioritize JD-relevant ones first; cap at 6 categories\n- Do NOT invent new experience, skills, or facts in the main bullets. Only reframe existing content from the candidate profile\n- NEVER add skills the candidate does not have\n- Preserve all company names, titles, dates, locations, education exactly\n- Do NOT use em-dashes or unicode special characters. Use regular hyphens (-) and ASCII only\n- Preserve **bold** formatting. For reformulated bullets, wrap the strongest metric in **bold** (one per bullet)\n- VERIFICATION: every selected/reformulated bullet must be traceable to the candidate profile\n\nRules for suggested_bullets[] (gap-fillers - DIFFERENT from main bullets):\n- For each experience entry, generate 1-2 PLAUSIBLE STAR-format bullets that cover JD keywords/skills no main bullet (selected from the pool) covers\n- These MAY invent realistic, believable facts/metrics that someone in this role at this company at this seniority would credibly have done\n- Specifically target JD keywords that no main bullet mentions\n- STAR format: strong action verb, context, concrete (possibly invented) metric or outcome\n- The user reviews these in a diff modal and accepts/rejects each\n- Wrap the strongest metric in **bold** (one per bullet)\n- Skip a role if no JD keyword gap exists\n\nCandidate Profile:\n{resume_json}\n\nJob Description:\n{job_description}\n\nReturn ONLY this JSON:\n{\"summary\": \"rewritten summary\", \"experience\": [{\"company\": \"unchanged\", \"title\": \"unchanged\", \"location\": \"unchanged\", \"date\": \"unchanged\", \"description\": \"unchanged or null\", \"bullets\": [\"selected + reformulated bullet from candidate profile\"], \"suggested_bullets\": [\"plausible gap-filler covering missing JD keyword\"]}], \"skills\": {\"reordered label\": \"reordered value\"}}", "Editable Persona tailoring LLM prompt template - used when base_resume_id='persona' to constrain bullet selection from the rich pool"),
     "cover_letter_llm_provider": ("codex_cli", "LLM provider for cover-letter generation"),
     "cover_letter_llm_model": ("gpt-6-astra", "LLM model for cover-letter generation"),
@@ -474,6 +531,37 @@ SEED_COMPANIES = [
     {"name": "Intuit", "tier": 2, "scrape_urls": ["https://jobs.intuit.com/search-jobs/results?ActiveFacetID=6252001-5332921&CurrentPage=1&RecordsPerPage=15&TotalContentResults=&Distance=50&RadiusUnitType=0&Keywords=&Location=United+States&ShowRadius=False&IsPagination=False&CustomFacetName=&FacetTerm=&FacetType=0&FacetFilters%5B0%5D.ID=6252001-5332921&FacetFilters%5B0%5D.FacetType=3&FacetFilters%5B0%5D.Count=435&FacetFilters%5B0%5D.Display=California%2C+United+States&FacetFilters%5B0%5D.IsApplied=true&FacetFilters%5B0%5D.FieldName=&SearchResultsModuleName=Search+Results&SearchFiltersModuleName=Search+Filters&SortCriteria=0&SortDirection=0&SearchType=1&OrganizationIds=27595&PostalCode=&ResultsType=0&fc=&fl=&fcf=&afc=&afl=&afcf=&TotalContentPages=NaN"]},
 ]
 
+# Official public-sector career/search pages requested for Company Search. Kept
+# separate from the example ATS seeds so existing installations can receive
+# these entries without re-seeding or replacing any user-created companies.
+GOVERNMENT_COMPANIES = [
+    {"name": "City of Ottawa", "scrape_urls": ["https://jobs-emplois.ottawa.ca/city-jobs/viewalljobs/"]},
+    {"name": "York Region", "scrape_urls": ["https://york.hua.hrsmart.com/hr/ats/JobSearch/viewAll"]},
+    {"name": "Peel Region", "scrape_urls": ["https://careers-peelregion.icims.com/jobs/search"]},
+    {"name": "Durham Region", "scrape_urls": ["https://recruitregion.durham.ca/psc/recruit_rmd/EMPLOYEE/HRMS/c/HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL?PAGE=HRS_CAREERS_FL"]},
+    {"name": "Halton Region", "scrape_urls": ["https://careers.halton.ca/go/All-Opportunities/2649617/"]},
+    {"name": "City of Mississauga", "scrape_urls": ["https://jobs.mississauga.ca/viewalljobs/"]},
+    {"name": "City of Brampton", "scrape_urls": ["https://careersff-brampton.icims.com/jobs/search"]},
+    {"name": "City of Hamilton", "scrape_urls": ["https://cityofhamilton.bamboohr.com/careers"]},
+]
+
+# Official direct career sources used by the existing Company Search. These are
+# deliberately inactive: adding them must not start new scheduled work.
+DIRECT_CAREER_COMPANIES = [
+    {"name": "Toronto Transit Commission (TTC)", "scrape_urls": ["https://career17.sapsf.com/career?company=TTCPRODUCTION"]},
+    {"name": "Metrolinx", "scrape_urls": ["https://ehtc.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1"]},
+    {"name": "Toronto Hydro", "scrape_urls": ["https://jobs.torontohydro.com/search/?q="]},
+    {"name": "Hydro One", "scrape_urls": ["https://jobs.hydroone.com/search/"]},
+    {"name": "Alectra", "scrape_urls": ["https://jobs.dayforcehcm.com/en-US/alectra/CANDIDATEPORTAL"]},
+    {"name": "Independent Electricity System Operator (IESO)", "scrape_urls": ["https://careers.ieso.ca/search/?createNewAlert=false&q=&optionsFacetsDD_customfield2=&optionsFacetsDD_customfield1="]},
+    {"name": "SickKids", "scrape_urls": ["https://career.sickkids.ca:8001/psc/CRHCMPRD/CAREER/HRMS/c/HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL?Page=HRS_APP_SCHJOB_FL&Action=U&FOCUS=Applicant&SiteId=1"]},
+    {"name": "Unity Health Toronto", "scrape_urls": ["https://css-ezjf9k52wb5ac52e-prd.tam.ca1.inforcloudsuite.com/hcm/CandidateSelfService/controller.servlet?context.dataarea=ezjf9k52wb5ac52e_prd_hcm&context.session.key.HROrganization=1&context.session.key.JobBoard=EXTERNAL&context.session.key.noheader=true"]},
+    {"name": "University Health Network (UHN)", "scrape_urls": ["https://forms.uhn.ca/UHNCareers"]},
+    {"name": "The Ottawa Hospital", "scrape_urls": ["https://jobposting.ottawahospital.on.ca/psc/jobposting/EMPLOYEE/HRMS/c/HRS_HRAM_FL.HRS_CG_SEARCH_FL.GBL?Page=HRS_APP_SCHJOB_FL&Action=U&FOCUS=Applicant&SiteId=2"]},
+    {"name": "CHEO", "scrape_urls": ["https://cheo.wd10.myworkdayjobs.com/External_Site"]},
+    {"name": "Queensway Carleton Hospital", "scrape_urls": ["https://erecruiter.qch.on.ca/"]},
+]
+
 
 def seed_settings(db):
     """Insert default settings if they don't exist."""
@@ -490,6 +578,27 @@ def seed_settings(db):
         db.commit()
 
 
+def migrate_default_resume_ids(db):
+    """Create the multi-select scoring setting from the legacy single value.
+
+    Existing installs with an empty legacy value previously meant "all bases +
+    Persona". Preserve the base-resume portion while deliberately dropping
+    Persona, which is no longer a scoring source.
+    """
+    if db.query(Setting).filter(Setting.key == "default_resume_ids").first():
+        return
+    legacy = db.query(Setting).filter(Setting.key == "default_resume_id").first()
+    legacy_id = (legacy.value or "").strip() if legacy else ""
+    valid_ids = {str(r.id) for r in db.query(Resume).filter(Resume.is_base == True).all()}
+    selected = [legacy_id] if legacy_id in valid_ids else sorted(valid_ids)
+    db.add(Setting(
+        key="default_resume_ids",
+        value=json.dumps(selected),
+        description=DEFAULT_SETTINGS["default_resume_ids"][1],
+    ))
+    db.commit()
+
+
 def seed_companies(db):
     """Insert seed companies if table is empty."""
     if db.query(Company).count() > 0:
@@ -503,6 +612,50 @@ def seed_companies(db):
             playwright_enabled=True,
         ))
     db.commit()
+
+
+def seed_government_companies(db):
+    """Add requested official sources without overwriting existing configuration.
+
+    A previously auto-created company can legitimately exist with no URLs; in
+    that one case fill the official URL so it becomes usable. Every non-empty
+    user configuration, active flag, filter and résumé selection is preserved.
+    """
+    existing = {c.name.casefold(): c for c in db.query(Company).all()}
+    changed = False
+    for item in GOVERNMENT_COMPANIES:
+        company = existing.get(item["name"].casefold())
+        if company is None:
+            db.add(Company(
+                name=item["name"], tier=None, scrape_urls=item["scrape_urls"],
+                active=False, playwright_enabled=True,
+            ))
+            changed = True
+        elif not (company.scrape_urls or []):
+            company.scrape_urls = item["scrape_urls"]
+            changed = True
+    if changed:
+        db.commit()
+
+
+def seed_direct_career_companies(db):
+    """Add direct sources; fill only empty URLs on pre-existing records."""
+    existing = {c.name.casefold(): c for c in db.query(Company).all()}
+    changed = False
+    for item in DIRECT_CAREER_COMPANIES:
+        company = existing.get(item["name"].casefold())
+        if company is not None and (company.scrape_urls or []):
+            continue
+        if company is not None:
+            company.scrape_urls = item["scrape_urls"]
+        else:
+            db.add(Company(
+                name=item["name"], tier=None, scrape_urls=item["scrape_urls"],
+                active=False, playwright_enabled=True,
+            ))
+        changed = True
+    if changed:
+        db.commit()
 
 
 H1B_SLUG_OVERRIDES = {
@@ -1043,6 +1196,9 @@ def seed_mock_resume(db):
     default_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
     if default_row:
         default_row.value = str(resume.id)
+    defaults_row = db.query(Setting).filter(Setting.key == "default_resume_ids").first()
+    if defaults_row:
+        defaults_row.value = json.dumps([str(resume.id)])
     db.commit()
 
     for company in db.query(Company).all():
@@ -1176,10 +1332,13 @@ def run_seeds():
     db = SessionLocal()
     try:
         run_migrations(db)
+        migrate_default_resume_ids(db)
         seed_settings(db)
         migrate_dedup_tracking_params(db)
         migrate_autofill_dicts(db)
         seed_companies(db)
+        seed_government_companies(db)
+        seed_direct_career_companies(db)
         seed_h1b_slugs(db)
         seed_searches(db)
         seed_mock_resume(db)

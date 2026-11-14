@@ -141,6 +141,53 @@ def test_list_applications_filters_by_status(api_client, test_db):
     assert "PM1" not in titles, f"PM1 should not be in rejected list, got titles: {titles}"
 
 
+def _add_application(test_db, external_id, title, company, source, status="applied"):
+    from backend.models.db import Application, Job
+    job = Job(external_id=external_id, title=title, company=company,
+              source=source, url=f"https://example.com/{external_id}")
+    test_db.add(job)
+    test_db.flush()
+    test_db.add(Application(job_id=job.id, status=status))
+    test_db.commit()
+
+
+def test_list_applications_filters_by_job_source_and_combines_filters(api_client, test_db):
+    """Source uses Job.source and composes with status/company without changing totals."""
+    _seed_first_run(test_db)
+    _add_application(test_db, "direct-acme", "Direct role", "Acme", "direct")
+    _add_application(test_db, "linkedin-acme", "LinkedIn role", "Acme", "jobspy_linkedin", "interview")
+    _add_application(test_db, "indeed-other", "Indeed role", "Other", "jobspy_indeed", "interview")
+
+    all_data = api_client.get("/api/applications").json()
+    assert all_data["total"] == 3
+
+    direct = api_client.get("/api/applications?source=direct").json()
+    assert direct["total"] == 1
+    assert {a["title"] for a in direct["applications"]} == {"Direct role"}
+
+    jobspy = api_client.get("/api/applications?source=jobspy_linkedin,jobspy_indeed").json()
+    assert jobspy["total"] == 2
+    assert {a["source"] for a in jobspy["applications"]} == {"jobspy_linkedin", "jobspy_indeed"}
+
+    combined = api_client.get(
+        "/api/applications?status=interview&source=jobspy_linkedin&company=Acme"
+    ).json()
+    assert combined["total"] == 1
+    assert combined["applications"][0]["title"] == "LinkedIn role"
+
+
+def test_list_applications_source_filter_respects_pagination(api_client, test_db):
+    _seed_first_run(test_db)
+    _add_application(test_db, "direct-1", "First", "Acme", "direct")
+    _add_application(test_db, "direct-2", "Second", "Acme", "direct")
+    _add_application(test_db, "jobspy-1", "Other source", "Acme", "jobspy_linkedin")
+
+    page = api_client.get("/api/applications?source=direct&limit=1&offset=1").json()
+    assert page["total"] == 2
+    assert len(page["applications"]) == 1
+    assert page["applications"][0]["source"] == "direct"
+
+
 def test_create_application_twice_returns_409(api_client, test_db):
     """A second POST for the same posting must not overwrite the first."""
     _seed_first_run(test_db)

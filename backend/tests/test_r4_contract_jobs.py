@@ -89,13 +89,32 @@ def test_patch_job_empty_body_is_a_noop_200(client, test_db):
 
 
 def test_patch_job_ignores_unknown_keys_silently(client, test_db):
-    """Current contract: keys outside {seen, saved, status} are dropped, not rejected."""
+    """Keys outside the explicit job-edit allow-list are dropped, not rejected."""
     job = make_job(test_db)
     r = assert_clean(client.patch(f"/api/jobs/{job.id}",
                                  json={"nonsense": 1, "company": "Hijacked", "status": "skip"}), 200)
     body = r.json()
     assert body["status"] == "skip"
     assert body["company"] == "Acme", "an unlisted key was written through"
+
+
+def test_patch_job_can_replace_captcha_description(client, test_db):
+    job = make_job(test_db, description="CAPTCHA interstitial")
+    r = assert_clean(client.patch(f"/api/jobs/{job.id}", json={
+        "description": "  Full duties, qualifications, and hiring requirements.  "
+    }), 200)
+    assert r.json()["description"] == "Full duties, qualifications, and hiring requirements."
+    test_db.refresh(job)
+    assert job.description == "Full duties, qualifications, and hiring requirements."
+
+
+@pytest.mark.parametrize("description", ["", "   ", "x" * 100_001])
+def test_patch_job_rejects_invalid_description(client, test_db, description):
+    job = make_job(test_db, description="Original description")
+    r = client.patch(f"/api/jobs/{job.id}", json={"description": description})
+    assert r.status_code == 400
+    test_db.refresh(job)
+    assert job.description == "Original description"
 
 
 @pytest.mark.parametrize("body", [[1, 2], "hello", 5, True, None])

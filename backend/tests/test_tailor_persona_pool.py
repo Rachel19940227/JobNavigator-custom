@@ -82,6 +82,44 @@ async def test_tailor_works_when_persona_empty(test_db, monkeypatch):
     await routes_resumes._tailor_impl(str(base_resume.id), str(job.id), None)
 
 
+@pytest.mark.asyncio
+async def test_resume_base_receives_only_approved_experience_bank(monkeypatch, test_db):
+    base_resume = Resume(
+        id=uuid.uuid4(), name="BA-base", is_base=True,
+        json_data={"summary": "Summary", "experience": [
+            {"title": "BA", "company": "iFLYTEK", "date": "2020-2024",
+             "location": "", "description": None, "bullets": ["Base bullet"]},
+        ], "skills": {}},
+    )
+    job = Job(id=uuid.uuid4(), title="Healthcare BA", company="Acme",
+              description="Healthcare workflow requirements", external_id="ext-bank")
+    persona = Persona(id=1, resume_content={
+        "summary": "Must not leak",
+        "experience": [{"company": "OtherCo", "bullets": ["Must not leak"]}],
+        "experience_bank": [
+            {"industry": "Healthcare", "project": "Hospital contact center",
+             "facts": ["Supported 20+ hospitals"], "status": "approved"},
+            {"industry": "Finance", "facts": ["Unapproved fact"], "status": "draft"},
+        ],
+    })
+    test_db.add_all([base_resume, job, persona, Setting(
+        key="cv_tailor_prompt", value="Resume:\n{resume_json}\nJD:\n{job_description}")])
+    test_db.commit()
+    captured = {}
+
+    async def fake_call(prompt, system, max_tokens=3000):
+        captured["prompt"] = prompt
+        return {"text": '{"summary":"x","experience":[],"skills":{}}', "usage": {}}
+
+    monkeypatch.setattr("backend.analyzer.llm_client.call_cv_tailor_llm", fake_call)
+    await routes_resumes._tailor_impl(str(base_resume.id), str(job.id), None)
+
+    assert "Supported 20+ hospitals" in captured["prompt"]
+    assert "Unapproved fact" not in captured["prompt"]
+    assert "Must not leak" not in captured["prompt"]
+    assert "only to enhance or rewrite the iFLYTEK experience" in captured["prompt"]
+
+
 
 
 # ── persona-merge helpers ────────────────────────────────────────────────────

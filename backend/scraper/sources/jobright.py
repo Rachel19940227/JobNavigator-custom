@@ -11,7 +11,12 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 
 from backend.models.db import SessionLocal, Job, Search, Setting, get_existing_external_ids
-from backend.scraper._shared.dedup import make_external_id, make_content_hash
+from backend.scraper._shared.dedup import (
+    find_duplicate_posting,
+    get_recent_applied_content_hashes,
+    make_external_id,
+    make_content_hash,
+)
 
 logger = logging.getLogger("jobnavigator.jobright")
 
@@ -252,6 +257,16 @@ def _parse_job(raw: dict) -> dict:
     grating = cr.get("grating") or {}
     glassdoor_rating = grating.get("rating") if isinstance(grating, dict) else None
 
+    posted_at = None
+    publish_time = jr.get("publishTime")
+    if publish_time:
+        try:
+            posted_at = datetime.strptime(str(publish_time), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            logger.debug("Jobright: unrecognized publishTime %r", publish_time)
+
     return {
         "title": jr.get("jobTitle", ""),
         "company": cr.get("companyName", ""),
@@ -267,12 +282,49 @@ def _parse_job(raw: dict) -> dict:
         "work_model": jr.get("workModel"),
         "applicants": jr.get("applicantsCount"),
         "posted": jr.get("publishTimeDesc"),
+        "posted_at": posted_at,
         "company_size": cr.get("companySize"),
         "company_funding": cr.get("fundraisingCurrentStage"),
         "glassdoor_rating": glassdoor_rating,
         "display_score": raw.get("displayScore"),
         "job_id": job_id,
     }
+
+
+def _within_hours(job: dict, hours_old: int, now: datetime | None = None) -> bool:
+    """True only when Jobright's exact publish time is within the configured window."""
+    if not hours_old:
+        return True
+    posted_at = job.get("posted_at")
+    if not isinstance(posted_at, datetime):
+        return False
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    age_seconds = (now - posted_at).total_seconds()
+    return 0 <= age_seconds <= hours_old * 3600
+
+
+def _matches_location_filter(job: dict, location_filter: str) -> bool:
+    """Match comma-separated cities plus the special ``Remote`` token.
+
+    Jobright recommendations are personalized and do not accept a location
+    parameter, so location filtering has to happen locally after retrieval.
+    ``Remote`` means Jobright explicitly labelled the role Remote; hybrid roles
+    still need to match one of the configured cities.
+    """
+    wanted = [part.strip().lower() for part in (location_filter or "").split(",") if part.strip()]
+    if not wanted:
+        return True
+
+    work_model = str(job.get("work_model") or "").strip().lower()
+    if any(part in ("remote", "fully remote", "remote only") for part in wanted):
+        if work_model == "remote":
+            return True
+
+    location = str(job.get("location") or "").lower()
+    city_terms = [part for part in wanted if part not in ("remote", "fully remote", "remote only")]
+    return any(re.search(rf"\b{re.escape(city)}\b", location) for city in city_terms)
 
 
 async def run(search: Search) -> dict:
@@ -358,9 +410,15 @@ async def run(search: Search) -> dict:
             _gte_db.close()
         include_kw = search.title_include_keywords or []
         exclude_kw = list(set((search.title_exclude_keywords or []) + _global_title_excl))
+        hours_old = int(search.hours_old if search.hours_old is not None else 24)
+        cutoff_now = datetime.now(timezone.utc)
         kept_jobs = []
         for j in unique_jobs:
             title_lower = j["title"].lower()
+            if not _within_hours(j, hours_old, cutoff_now):
+                continue
+            if not _matches_location_filter(j, search.location or ""):
+                continue
             if include_kw and not any(kw.lower() in title_lower for kw in include_kw):
                 continue
             if exclude_kw and any(re.search(r'\b' + re.escape(kw) + r'\b', title_lower) for kw in exclude_kw):
@@ -405,6 +463,7 @@ async def run(search: Search) -> dict:
         new_jobs = 0
         try:
             existing_ids = get_existing_external_ids(db)
+            recent_applied_hashes = get_recent_applied_content_hashes(db)
 
             for j in kept_jobs:
                 job_url = j["url"]
@@ -419,6 +478,12 @@ async def run(search: Search) -> dict:
                         continue
 
                 content_hash = make_content_hash(j["company"], j["title"])
+                if content_hash in recent_applied_hashes:
+                    logger.info(
+                        "Skipping recently applied cross-source duplicate: %s @ %s",
+                        j["title"], j["company"],
+                    )
+                    continue
 
                 job = Job(
                     external_id=ext_id,
@@ -430,6 +495,7 @@ async def run(search: Search) -> dict:
                     search_id=search.id,
                     location=j.get("location") or None,
                     description=j.get("description") or None,
+                    posted_at=j.get("posted_at"),
                     status="new",
                     seen=False,
                     saved=False,
@@ -458,6 +524,14 @@ async def run(search: Search) -> dict:
                     apply_location_to_job(job)
                 except Exception as e:
                     logger.warning(f"Inline analysis failed for {j['title']}: {e}")
+
+                duplicate = find_duplicate_posting(db, job)
+                if duplicate:
+                    logger.info(
+                        "Skipping duplicate posting: %s @ %s (%s duplicates %s)",
+                        j["title"], j["company"], job_url, duplicate.url,
+                    )
+                    continue
 
                 if job.h1b_jd_flag:
                     _phrase = getattr(job, "_h1b_matched_phrase", None) or "?"
@@ -595,6 +669,8 @@ async def preview(search, db) -> dict:
         exclude_kw = list(set((search.title_exclude_keywords or []) + _global_title_excl))
         min_score = search.min_fit_score or 0
         require_salary = getattr(search, "require_salary", False)
+        hours_old = int(search.hours_old if search.hours_old is not None else 24)
+        cutoff_now = datetime.now(timezone.utc)
 
         # Company exclude sets (global + per-search + active companies when flag on)
         from backend.scraper._shared.filters import build_search_exclude_sets
@@ -622,8 +698,18 @@ async def preview(search, db) -> dict:
             kept = True
             reason = None
 
+            if not _within_hours(j, hours_old, cutoff_now):
+                kept = False
+                reason = f"Older than {hours_old} hours"
+
+            # Jobright's recommendations endpoint has no location parameter.
+            # Apply the configured cities / Remote token locally.
+            if not _matches_location_filter(j, search.location or ""):
+                kept = False
+                reason = f"Outside location filter: {search.location}"
+
             # Title filters
-            if include_kw and not any(kw.lower() in title_lower for kw in include_kw):
+            if kept and include_kw and not any(kw.lower() in title_lower for kw in include_kw):
                 kept = False
                 reason = f"No match for: {', '.join(include_kw)}"
             if kept and exclude_kw:
@@ -713,6 +799,7 @@ async def preview(search, db) -> dict:
                 "mode": "jobright",
                 "search_term": search.search_term or "",
                 "results_wanted": results_wanted,
+                "hours_old": hours_old,
             },
         }
 

@@ -705,16 +705,17 @@ export default function Stats() {
               </TableHead>
               {runs.map((r) => {
                 const failed = r.status === 'failed'
+                const warning = r.status === 'warning'
                 return (
                   <TableRow key={r.id} size="sm">
                     <Mono line={16} tone="muted" style={{ flex: '0 0 118px' }}>{when(r.started_at)}</Mono>
                     <Mono line={16} tone="base" code style={{ flex: '0 0 140px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 8 }}>{r.job_type}</Mono>
                     <Helper size="xs" style={{ flex: '0 0 90px' }}>{r.trigger}</Helper>
                     <span style={{ flex: '0 0 100px', display: 'flex' }}>
-                      <Pill bg={failed ? 'var(--bad-soft)' : r.status === 'running' ? 'var(--accent-soft)' : 'var(--hover-soft)'} fg={failed ? 'var(--bad)' : 'var(--accent)'}>{r.status}</Pill>
+                      <Pill bg={failed ? 'var(--bad-soft)' : warning ? 'var(--warn-soft)' : r.status === 'running' ? 'var(--accent-soft)' : 'var(--hover-soft)'} fg={failed ? 'var(--bad)' : warning ? 'var(--warn)' : 'var(--accent)'}>{r.status}</Pill>
                     </span>
                     <Mono line={16} tone="base" style={{ flex: '0 0 76px' }}>{dur(r.duration_seconds)}</Mono>
-                    <span title={r.error || r.result_summary || ''} style={{ flex: 1, minWidth: 0, color: failed ? 'var(--bad)' : 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.error || r.result_summary || '—'}</span>
+                    <span title={r.error || r.result_summary || ''} style={{ flex: 1, minWidth: 0, color: failed ? 'var(--bad)' : warning ? 'var(--warn)' : 'var(--text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.error || r.result_summary || '—'}</span>
                   </TableRow>
                 )
               })}

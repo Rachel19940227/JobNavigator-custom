@@ -294,8 +294,8 @@ def delete_company(company_id: str, db: Session = Depends(get_db)):
 @router.post("/auto-create-from-jobs")
 def auto_create_from_jobs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Scan all Job.company distinct values and create inactive Company records for unmatched names."""
-    default_resume_row = db.query(Setting).filter(Setting.key == "default_resume_id").first()
-    default_resume_ids = [default_resume_row.value] if default_resume_row and default_resume_row.value else []
+    from backend.analyzer.cv_scorer import get_default_resume_ids
+    default_resume_ids = get_default_resume_ids(db)
 
     from backend.models.db import get_company_all_names
     existing = set(get_company_all_names(db).keys())
@@ -392,6 +392,7 @@ async def test_scrape_company(company_id: str, db: Session = Depends(get_db)):
     from backend.scraper._shared.filters import match_title_expr
     from backend.scraper.ats.generic import (
         _extract_all_pages, _wait_for_content, _setup_route_blocks,
+        _ottawa_search_url, _icims_listing_url, _prepare_successfactors_search,
     )
     from backend.scraper.ats.talentbrew import (
         is_talentbrew as _is_talentbrew_ajax,
@@ -436,6 +437,10 @@ async def test_scrape_company(company_id: str, db: Session = Depends(get_db)):
     from backend.scraper.ats.google import (
         is_google as _is_google_careers,
         scrape as _scrape_google_careers,
+    )
+    from backend.scraper.ats.icims import (
+        is_icims as _is_icims,
+        scrape as _scrape_icims,
     )
 
     urls = company.scrape_urls or []
@@ -537,10 +542,25 @@ async def test_scrape_company(company_id: str, db: Session = Depends(get_db)):
                     all_rejected.extend(rejected)
                     urls_scraped.append(f"{target_url[:80]}... ({len(jobs)} found via Google Careers)")
                     continue
+                if _is_icims(target_url):
+                    jobs, rejected = await _scrape_icims(
+                        target_url, debug=True, max_pages=max_pages,
+                    )
+                    all_jobs.extend(jobs)
+                    all_rejected.extend(rejected)
+                    urls_scraped.append(
+                        f"{target_url[:80]}... ({len(jobs)} found via iCIMS HTML)"
+                    )
+                    continue
 
                 page = await _new_page(browser)
                 await _setup_route_blocks(page)
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(
+                    _icims_listing_url(_ottawa_search_url(target_url)),
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await _prepare_successfactors_search(page)
                 await _wait_for_content(page, company.wait_for_selector)
                 png_bytes = await page.screenshot(full_page=True)
                 screenshots.append({

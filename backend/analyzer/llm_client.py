@@ -45,7 +45,7 @@ def resolve_llm_config(feature: str = "", db=None) -> dict:
 async def call_llm(prompt: str, system: str, max_tokens: int = 1200,
                    cached_prefix: str | None = None,
                    provider: str | None = None, model: str | None = None,
-                   api_key: str | None = None) -> dict:
+                   api_key: str | None = None, operation: str | None = None) -> dict:
     """Route to the configured LLM provider with retry + automatic fallback; provider/model/api_key override the Primary for this call when given, else fall back to the llm_* settings."""
     MAX_ATTEMPTS = 4
     BACKOFF_BASE = 2  # seconds: 2, 4, 8
@@ -69,7 +69,7 @@ async def call_llm(prompt: str, system: str, max_tokens: int = 1200,
     # machine.  The broad legacy fallback below must never route a subscription
     # failure to an arbitrary cloud provider.
     if provider == "codex_cli":
-        operation = "score_full" if max_tokens > 600 else "score_light"
+        operation = operation or ("score_full" if max_tokens > 600 else "score_light")
         codex_prompt = f"{cached_prefix}\n\n{prompt}" if cached_prefix else prompt
         return await _call_codex_with_local_fallback(
             operation, codex_prompt, system, max_tokens, model or "subscription-default")
@@ -161,6 +161,11 @@ async def call_cover_letter_llm(prompt: str, system: str, max_tokens: int = 1500
 
     logger.info(f"Cover-letter LLM call: provider={provider}, model={model}, max_tokens={max_tokens}, "
                 f"caching={'on' if cached_prefix and provider == 'claude_api' else 'off'}")
+    if provider == "codex_cli":
+        combined = f"{cached_prefix}\n\n{prompt}" if cached_prefix else prompt
+        return await _call_codex_with_local_fallback(
+            "cover_letter", combined, system, max_tokens,
+            model or "subscription-default")
     res = await _dispatch(provider, model, cfg["api_key"], prompt, system, max_tokens,
                           cached_prefix=cached_prefix)
     return {**res, "provider": provider, "model": model}
@@ -253,12 +258,9 @@ async def _dispatch(provider: str, model: str, api_key: str,
         return await _call_claude_api(prompt, system, model, api_key, max_tokens, cached_prefix=cached_prefix)
     combined = f"{cached_prefix}\n\n{prompt}" if cached_prefix else prompt
     if provider == "codex_cli":
-        operation = "score_full" if max_tokens > 600 else "score_light"
-        return await _call_codex_runner(operation, combined, system, max_tokens)
+        return await _call_codex_runner("text", combined, system, max_tokens, model)
     if provider == "claude_code":
         return await _call_claude_code(combined, system, model, max_tokens)
-    elif provider == "codex_cli":
-        return await _call_codex_cli(combined, system, model, max_tokens)
     elif provider == "openai":
         return await _call_openai(combined, system, model, api_key, max_tokens)
     elif provider == "openrouter":

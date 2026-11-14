@@ -168,7 +168,8 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                         places.append(other)
                 jobs.append({"title": title, "url": job_url,
                              "location": loc_label or None,
-                             "locations": places})
+                             "locations": places,
+                             "posted_at": best.get("createdAt") or best.get("publishedAt")})
             elif debug:
                 rejected.append({"title": title, "url": job_url, "selector": "rippling_api", "reason": reason})
 

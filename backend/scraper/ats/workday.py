@@ -189,7 +189,8 @@ async def scrape(url: str, debug: bool = False) -> list[dict] | tuple:
                     # description fetch already downloads for each new job.
                     jobs.append({"title": title, "url": job_url,
                                  "location": _board_location_of(p),
-                                 "arrangement": _arrangement_of(p)})
+                                 "arrangement": _arrangement_of(p),
+                                 "posted_at": p.get("postedOn")})
                 elif debug:
                     rejected.append({"title": title, "url": job_url, "selector": "workday_api", "reason": reason})
 

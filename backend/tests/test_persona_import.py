@@ -91,11 +91,14 @@ def test_import_from_base_resume_maps_contact_and_content(api_client, test_db):
 
 
 def test_import_overwrites_and_leaves_other_nodes_alone(api_client, test_db):
-    """contact + resume_content are replaced wholesale; the five autofill nodes keep every value they had."""
+    """Import replaces rendered resume sections, preserves the experience bank, and leaves autofill nodes alone."""
     _seed(test_db)
     p = test_db.query(Persona).filter(Persona.id == 1).first()
     p.contact = {"first_name": "Old", "email": "old@example.com", "current_company": "Nowhere"}
-    p.resume_content = {"summary": "old summary", "experience": [{"company": "Old Co", "bullets": []}]}
+    bank = [{"industry": "Healthcare", "facts": ["Supported 20+ hospitals"],
+             "status": "approved"}]
+    p.resume_content = {"summary": "old summary", "experience": [{"company": "Old Co", "bullets": []}],
+                        "experience_bank": bank}
     p.work_auth = {"authorized_us": True}
     p.demographics = {"gender": "male"}
     p.compensation = {"desired_salary": "180000"}
@@ -114,6 +117,7 @@ def test_import_overwrites_and_leaves_other_nodes_alone(api_client, test_db):
     assert got["contact"]["current_company"] == "Acme Inc."
     assert got["resume_content"]["summary"] == RESUME_JSON["summary"]
     assert got["resume_content"]["experience"] == RESUME_JSON["experience"]
+    assert got["resume_content"]["experience_bank"] == bank
 
     # untouched
     assert got["work_auth"] == {"authorized_us": True}
